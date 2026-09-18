@@ -19,7 +19,7 @@ from joints import (RULE_TEXT, check_entries, compute_sections, name_sections,
                     place_joints, report, update_negab)
 from layout import build_station
 from parser import parse_image
-from render import render
+from render import fit_view, render
 
 
 class App(tk.Tk):
@@ -32,6 +32,8 @@ class App(tk.Tk):
         self.st = None
         self.src_img = None
         self.transform = None
+        self.view = None            # (k, ox, oy) при зуме; None – вся схема в окне
+        self._pan = None
         self._tk_imgs = {}
         self._redraw_job = None
 
@@ -58,6 +60,12 @@ class App(tk.Tk):
         for k, text in labels.items():
             ttk.Checkbutton(bar, text=text, variable=self.opts[k],
                             command=self.redraw).pack(side='left', padx=2)
+        ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=6)
+        ttk.Button(bar, text='−', width=3, command=lambda: self.zoom_center(1 / 1.5)).pack(side='left')
+        ttk.Button(bar, text='+', width=3, command=lambda: self.zoom_center(1.5)).pack(side='left', padx=2)
+        ttk.Button(bar, text='Вписать', command=self.zoom_fit).pack(side='left')
+        self.zoom_lbl = ttk.Label(bar, text='100%', width=7, anchor='e')
+        self.zoom_lbl.pack(side='left', padx=4)
 
         body = ttk.PanedWindow(self, orient='horizontal')
         body.pack(fill='both', expand=True)
@@ -69,8 +77,9 @@ class App(tk.Tk):
         self.cv_src.pack(fill='both', expand=True)
         left.add(f1, weight=1)
 
-        f2 = ttk.LabelFrame(left, text='Распознанная схема со стыками   '
-                                       '(ЛКМ – добавить/удалить стык, ПКМ – негабаритный)')
+        f2 = ttk.LabelFrame(left, text='Схема со стыками   (ЛКМ – добавить/удалить стык, '
+                                       'ПКМ – негабаритный, колесо – зум, '
+                                       'Ctrl+ЛКМ или средняя кнопка – двигать, 0 – вписать)')
         self.cv = tk.Canvas(f2, bg='white', highlightthickness=0)
         self.cv.pack(fill='both', expand=True)
         left.add(f2, weight=3)
@@ -91,6 +100,19 @@ class App(tk.Tk):
         self.cv.bind('<Button-1>', self.on_click)
         self.cv.bind('<Button-3>', self.on_right)
         self.cv.bind('<Motion>', self.on_motion)
+        # зум и перемещение
+        self.cv.bind('<MouseWheel>', self.on_wheel)                  # Windows / macOS
+        self.cv.bind('<Button-4>', lambda e: self.zoom_at(e.x, e.y, 1.25))   # Linux
+        self.cv.bind('<Button-5>', lambda e: self.zoom_at(e.x, e.y, 0.8))
+        for press, drag in (('<Button-2>', '<B2-Motion>'),
+                            ('<Control-Button-1>', '<Control-B1-Motion>')):
+            self.cv.bind(press, self.pan_start)
+            self.cv.bind(drag, self.pan_move)
+        self.cv.bind('<Enter>', lambda e: self.cv.focus_set())
+        for key, f in (('<plus>', 1.5), ('<equal>', 1.5), ('<KP_Add>', 1.5),
+                       ('<minus>', 1 / 1.5), ('<KP_Subtract>', 1 / 1.5)):
+            self.cv.bind(key, lambda e, f=f: self.zoom_center(f))
+        self.cv.bind('<Key-0>', lambda e: self.zoom_fit())
 
     # ----------------------------------------------------------- действия
     def open(self):
@@ -121,6 +143,7 @@ class App(tk.Tk):
     def _loaded(self, path, parsed, st, annots):
         self.config(cursor='')
         self.parsed, self.st, self.annots = parsed, st, annots
+        self.view = None
         self.src_img = Image.open(path).convert('RGB')
         g = st.g
         info = parsed['info']
@@ -169,12 +192,51 @@ class App(tk.Tk):
             self.after_cancel(self._redraw_job)
         self._redraw_job = self.after(80, self.redraw)
 
-    def _render(self, size, highlight=None):
+    def _render(self, size, highlight=None, view=None):
         o = {k: v.get() for k, v in self.opts.items()}
         return render(self.st, size, show_grid=o['grid'], show_joints=o['joints'],
                       show_letters=o['letters'], show_numbers=o['numbers'],
                       show_sections=o['sections'], show_section_names=o['section_names'],
-                      show_annots=o['annots'], annots=self.annots, highlight=highlight)
+                      show_annots=o['annots'], annots=self.annots, highlight=highlight,
+                      view=view)
+
+    # ----------------------------------------------------------- зум
+    def _fit(self):
+        w, h = max(10, self.cv.winfo_width()), max(10, self.cv.winfo_height())
+        return fit_view(self.st, (w, h), self.annots if self.opts['annots'].get() else ())
+
+    def zoom_at(self, sx, sy, factor):
+        """Масштабирование относительно точки экрана (sx, sy) – она остаётся на месте."""
+        if not self.st or not self.transform:
+            return
+        k, ox, oy = self.transform
+        kfit = self._fit()[0]
+        nk = min(max(k * factor, kfit * 0.5), kfit * 60)
+        f = nk / k
+        self.view = (nk, sx - (sx - ox) * f, sy - (sy - oy) * f)
+        self.schedule_redraw()
+
+    def zoom_center(self, factor):
+        self.zoom_at(self.cv.winfo_width() / 2, self.cv.winfo_height() / 2, factor)
+
+    def zoom_fit(self):
+        self.view = None
+        self.redraw()
+
+    def on_wheel(self, ev):
+        self.zoom_at(ev.x, ev.y, 1.25 if ev.delta > 0 else 0.8)
+
+    def pan_start(self, ev):
+        if self.transform:
+            self._pan = (ev.x, ev.y, *self.transform)
+            self.cv.configure(cursor='fleur')
+
+    def pan_move(self, ev):
+        if not self._pan:
+            return
+        x0, y0, k, ox, oy = self._pan
+        self.view = (k, ox + ev.x - x0, oy + ev.y - y0)
+        self.schedule_redraw()
 
     def redraw(self, highlight=None):
         self._redraw_job = None
@@ -190,10 +252,11 @@ class App(tk.Tk):
         # схема
         if self.st is not None:
             w, h = max(10, self.cv.winfo_width()), max(10, self.cv.winfo_height())
-            img, self.transform = self._render((w, h), highlight)
+            img, self.transform = self._render((w, h), highlight, self.view)
             self._tk_imgs['res'] = ImageTk.PhotoImage(img)
             self.cv.delete('all')
             self.cv.create_image(0, 0, anchor='nw', image=self._tk_imgs['res'])
+            self.zoom_lbl.configure(text=f'{self.transform[0] / self._fit()[0] * 100:.0f}%')
 
     # ----------------------------------------------------------- мышь
     def _to_model(self, ev):

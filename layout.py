@@ -1,12 +1,13 @@
 """Компоновка схемы «на миллиметровке».
 
 Схема перечерчивается так, как её чертили бы на миллиметровой бумаге:
-  * междупутье = 1 клетка = 10 мм, все пути лежат на линиях сетки;
-  * ординаты (x) стрелок и стыков – в миллиметрах;
+  * междупутье = 1 клетка = 10 мм, все пути лежат на линиях сетки 10 мм;
+  * все диагонали (съезды, стрелочные улицы, ответвления) – под 30° (прил. 1);
+  * все узлы (стрелки, изломы, концы) – на линиях миллиметровки (целые мм),
+    поэтому проекция диагонали на 1 междупутье = 17 мм (угол 30,5°);
   * между элементами выдерживаются минимальные расстояния (см. ниже);
-  * если стыки не помещаются, схема раздвигается по горизонтали, при этом
-    наклон съездов и стрелочных улиц сохраняется (диагонали «жёсткие»),
-    а взаимный порядок элементов не меняется.
+  * если стыки не помещаются, схема раздвигается по горизонтали, наклон
+    диагоналей и взаимный порядок элементов при этом не меняются.
 
 Задача раздвижки – система разностных ограничений x_b - x_a >= L,
 решается поиском самых длинных путей (Беллман–Форд) от исходных положений.
@@ -21,12 +22,13 @@ from joints import (Station, _central_edge, _find_center, _switch_geometry, anal
 
 CELL = 10.0          # мм – междупутье
 MIN_EDGE = 5.0       # мин. длина любого горизонтального отрезка между узлами
-MIN_SW = 10.0        # мин. расстояние между соседними стрелками на пути
+MIN_SW = 14.0        # мин. расстояние между соседними стрелками (2 обозначения по 5 мм + зазор)
 MIN_JJ = 8.0         # мин. расстояние между соседними стыками
 MIN_NJ = 5.0         # мин. расстояние от узла до «свободного» стыка
 ENTRY_ZONE = 30.0    # мин. длина участка НП/ЧП между стыками а и в
 TRACK_ZONE = 30.0    # мин. длина пути станции между стыками б
-MIN_GAP = 8.0        # зазор между несвязанными отрезками на одной линии сетки
+MIN_GAP = 15.0       # зазор между несвязанными отрезками на одной линии сетки
+PP_TEXT = 15.0       # место под надпись «п/п» у конца подъездного пути
 MARGIN = 20.0        # поля листа слева/сверху
 
 
@@ -35,12 +37,13 @@ def build_station(graph, annots=()):
     st = analyse(graph)
     orig = {n.id: (n.x, n.y) for n in graph.nodes.values()}
     y0, u0 = to_grid(st)
-    for _ in range(6):
+    for _ in range(8):
         place_joints(st)
         if not relax(st):
             break
     refresh(st)
     place_joints(st)
+    st.geom_check = check_geometry(st)
     new_annots = _move_annots(st, annots, orig, y0, u0)
     return st, new_annots
 
@@ -51,22 +54,32 @@ def to_grid(st: Station):
     u = st.u
     x0 = min(n.x for n in g.nodes.values())
     y0 = min(n.y for n in g.nodes.values())
+    # уровни путей -> целые клетки: каждый уровень строго на линии 10 мм,
+    # соседние уровни не ближе одной клетки, порядок сверху вниз сохраняется
+    levels = []
+    for y in sorted(n.y for n in g.nodes.values()):
+        if levels and y - levels[-1][-1] < u * 0.3:
+            levels[-1].append(y)
+        else:
+            levels.append([y])
+    row_of, prev = {}, None
+    for lv in levels:
+        r = round((sum(lv) / len(lv) - y0) / u)
+        if prev is not None:
+            r = max(r, prev + 1)
+        for y in lv:
+            row_of[y] = r
+        prev = r
     for n in g.nodes.values():
-        rows = round((n.y - y0) / u * 2) / 2            # шаг – полклетки
-        n.y = MARGIN + rows * CELL
-        n.x = MARGIN + (n.x - x0) / u * CELL
-    # стрелочные улицы и съезды – строго прямые
-    for c in st.chains:
-        ns = c['nodes']
-        a, b = g.nodes[ns[0]], g.nodes[ns[-1]]
-        if abs(b.y - a.y) < 1e-6:
-            continue
-        for k in ns[1:-1]:
-            n = g.nodes[k]
-            n.x = a.x + (b.x - a.x) * (n.y - a.y) / (b.y - a.y)
-    # ординаты – с точностью до 0,5 мм
-    for n in g.nodes.values():
-        n.x = round(n.x * 2) / 2
+        n.y = MARGIN + row_of[n.y] * CELL
+        n.x = round(MARGIN + (n.x - x0) / u * CELL)     # на линии сетки (1 мм)
+    # направление каждой диагонали (вправо/влево) берём с картинки,
+    # а наклон дальше задаётся строго 30° (прил. 1)
+    st.diag_dir = {}
+    for e in g.edges.values():
+        na, nb = g.nodes[e.a], g.nodes[e.b]
+        if abs(na.y - nb.y) > 1e-6:
+            st.diag_dir[e.id] = 1 if nb.x >= na.x else -1
     st.u = CELL
     refresh(st)
     return y0, u
@@ -144,6 +157,8 @@ def _required(st: Station, e) -> float:
         need = max(need, A + B + ENTRY_ZONE)
     if 'б' in rules and e.id in st.track_names:
         need = max(need, A + B + TRACK_ZONE)
+    if any(g.nodes[n].mark == 'pp' for n in (a, b)):
+        need += PP_TEXT
     return need
 
 
@@ -157,9 +172,9 @@ def relax(st: Station) -> bool:
         na, nb = g.nodes[e.a], g.nodes[e.b]
         if abs(na.y - nb.y) < 1e-6:
             a, b = (e.a, e.b) if na.x <= nb.x else (e.b, e.a)
-            cons.append((a, b, _required(st, e)))
+            cons.append((a, b, math.ceil(_required(st, e) - 1e-6)))
         else:
-            d = nb.x - na.x                     # наклон диагонали сохраняется
+            d = diag_dx(st, e)                  # строго 30° к горизонтали
             cons.append((e.a, e.b, d))
             rev.append((e.b, e.a, -d))
     # на одной линии сетки несвязанные отрезки не должны наезжать друг на друга
@@ -173,15 +188,44 @@ def relax(st: Station) -> bool:
             if frozenset((a, b)) not in linked:
                 cons.append((a, b, MIN_GAP))
     ok = _solve(x, cons + rev, len(x))
+    st.slope_ok = ok
     if not ok:                                  # цикл (напр., перекрёстный съезд) –
         x = {n: g.nodes[n].x for n in g.nodes}  # разрешаем диагоналям менять наклон
         _solve(x, cons, len(x))
     moved = max(abs(x[n] - g.nodes[n].x) for n in x) if x else 0
     for n in x:
-        g.nodes[n].x = round(x[n] * 2) / 2
+        g.nodes[n].x = round(x[n])              # все узлы – на линиях миллиметровки
     if moved > 0.25:
         refresh(st)
     return moved > 0.25
+
+
+SLOPE = 1 / math.tan(math.radians(30))     # √3: горизонталь на 1 мм подъёма
+
+
+def diag_dx(st: Station, e) -> int:
+    """Горизонтальная проекция диагонали под 30°, округлённая до целого мм
+    (узлы – на линиях сетки): 1 междупутье (10 мм) -> 17 мм, 2 -> 35 мм, 3 -> 52 мм."""
+    g = st.g
+    dy = abs(g.nodes[e.b].y - g.nodes[e.a].y)
+    return st.diag_dir.get(e.id, 1) * round(SLOPE * dy)
+
+
+def check_geometry(st: Station):
+    """Проверка чертежа: углы диагоналей, узлы на сетке."""
+    g = st.g
+    bad_angle, off_grid = [], []
+    for e in g.edges.values():
+        na, nb = g.nodes[e.a], g.nodes[e.b]
+        dy = abs(nb.y - na.y)
+        if dy > 1e-6:
+            ang = math.degrees(math.atan2(dy, abs(nb.x - na.x)))
+            if abs(ang - 30) > 1.0:
+                bad_angle.append(round(ang, 1))
+    for n in g.nodes.values():
+        if abs(n.x - round(n.x)) > 1e-6 or abs(n.y - round(n.y)) > 1e-6:
+            off_grid.append(n.id)
+    return bad_angle, off_grid
 
 
 def _solve(x, cons, n):

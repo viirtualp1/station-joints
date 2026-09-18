@@ -258,13 +258,20 @@ def _extend_entries(st: Station):
 
 
 def _central_edge(st: Station, line):
+    """Средняя часть пути станции: отрезок, пересекающий ось станции, а если
+    ось его не пересекает (после раздвижки) – самый длинный отрезок между
+    стрелками/изломами этого пути."""
     g = st.g
     for k in line['edges']:
         e = g.edges[k]
         xa, xb = sorted((g.nodes[e.a].x, g.nodes[e.b].x))
         if xa <= st.xc <= xb:
             return e
-    return None
+    if 'name' not in line:
+        return None
+    inner = [g.edges[k] for k in line['edges']
+             if g.degree(g.edges[k].a) >= 2 and g.degree(g.edges[k].b) >= 2]
+    return max(inner, key=g.length, default=None)
 
 
 def _name_tracks(st: Station):
@@ -360,7 +367,7 @@ def _add(st: Station, edge, t, rule, negab=None, why=''):
 # (схема не в масштабе по длине, поэтому всё приближённо).
 FOUL = 4.1 / 5.3
 MARGIN = 3.5 / 5.3 * 0.5
-FRAME = 0.5          # стык у рамного рельса (3–5 м) со стороны остряков – за утолщением стрелки
+FRAME = 0.7          # стык у рамного рельса со стороны остряков – за обозначением стрелки (5 мм) + 2 мм
 
 
 def foul_dist(st: Station, s, edge_id) -> float:
@@ -448,7 +455,7 @@ def place_joints(st: Station):
     b_at = {}                                   # узел на конце пути -> стык б
     for l in st.lines:
         e = _central_edge(st, l)
-        if e is None or not (l['x0'] < st.xc < l['x1']):
+        if e is None or 'name' not in l:        # только пути станции (I, II, 3, 4…)
             continue
         nm = l.get('name', '?')
         for n in (e.a, e.b):
@@ -575,7 +582,7 @@ def _align_ladder_ends(st: Station, b_at):
         ax, bx = g.nodes[e.a].x, g.nodes[e.b].x
         L = g.length(e)
         t = (x_target - ax) / (bx - ax) * L if bx != ax else j.t
-        if 0.05 * L < t < 0.95 * L:
+        if 0.5 < t < L - 0.5:                   # хоть 1 мм от излома – но строго под соседним
             j.t = t
             j.anchor = (bend, t if e.a == bend else L - t)
 
@@ -764,7 +771,13 @@ def report(st: Station) -> str:
         x0 = min(n.x for n in g.nodes.values())
         out.append('Миллиметровка: 1 клетка = 10 мм = междупутье; ординаты от левого края, мм:')
         sws = sorted(st.sw, key=lambda s: _numkey(_nm(st, s)))
-        out.append('  ' + ', '.join(f'{_nm(st, s)}: {g.nodes[s].x - x0:.1f}' for s in sws))
+        out.append('  ' + ', '.join(f'{_nm(st, s)}: {g.nodes[s].x - x0:.0f}' for s in sws))
+        chk = getattr(st, 'geom_check', None)
+        if chk is not None:
+            bad, off = chk
+            out.append('Проверка чертежа: диагонали под 30° – '
+                       + ('все' if not bad else f'НЕ все ({len(bad)}: {bad})')
+                       + '; узлы на линиях сетки – ' + ('все' if not off else f'НЕ все ({len(off)})'))
     out.append('')
     out.append('Въезды (зона между стыками а и в):')
     for sig, ok, first in st.entry_check:
