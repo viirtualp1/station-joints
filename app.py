@@ -18,8 +18,8 @@ from typing import Literal
 import customtkinter as ctk
 from PIL import Image, ImageTk
 
-from checks import audit
 from graph import Joint
+from icons import ctk_icon, dots, replace, theme_icon
 from joints import (RULE_TEXT, Station, check_entries, compute_sections, name_sections,
                     place_joints, report, update_negab)
 from layout import build_station, snap_joints
@@ -91,6 +91,11 @@ class App(ctk.CTk):
         self._redraw_job: str | None = None
         self._pan: list[int] | None = None
         self._toast_job: str | None = None
+        self._anim_job: str | None = None
+        self._focus = None                                # светофор, к которому приблизились
+        self._focus_job: str | None = None
+        self._sig_cards: dict[int, ctk.CTkFrame] = {}
+        self._sig_selected: ctk.CTkFrame | None = None
 
         self.layers = {k: tk.BooleanVar(value=v) for k, v in dict(
             grid=True, joints=True, signals=True, numbers=True, letters=False,
@@ -113,74 +118,115 @@ class App(ctk.CTk):
         self._build_statusbar()
 
     def _build_header(self):
-        h = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=60, border_width=0)
-        h.grid(row=0, column=0, columnspan=3, sticky='nsew')
+        # шапка как flex-строка с align-items: center – фиксированная высота,
+        # у всех элементов общая вертикальная ось
+        H = 60
+        h = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=H, border_width=0)
+        h.grid(row=0, column=0, columnspan=3, sticky='ew')
+        h.grid_propagate(False)
+        h.grid_rowconfigure(0, weight=1)
         h.grid_columnconfigure(1, weight=1)
-        logo = ctk.CTkFrame(h, width=34, height=34, corner_radius=9, fg_color=ACCENT)
-        logo.grid(row=0, column=0, rowspan=2, padx=(18, 12), pady=13)
-        logo.grid_propagate(False)
-        ctk.CTkLabel(logo, text='⊥', font=font(18, 'bold'), text_color='white').place(
-            relx=0.5, rely=0.5, anchor='center')
-        titles = ctk.CTkFrame(h, fg_color='transparent')
-        titles.grid(row=0, column=1, sticky='w')
-        ctk.CTkLabel(titles, text=APP_NAME, font=font(16, 'bold'), text_color=TEXT).pack(
-            side='left')
-        self.file_lbl = ctk.CTkLabel(titles, text=APP_SUB, font=font(13), text_color=MUTED)
-        self.file_lbl.pack(side='left', padx=(12, 0))
-        self.badge = ctk.CTkLabel(titles, text='', font=font(12, 'bold'), corner_radius=10,
-                                  fg_color='transparent', text_color='white', height=22)
-        self.badge.pack(side='left', padx=(12, 0))
 
-        actions = ctk.CTkFrame(h, fg_color='transparent')
-        actions.grid(row=0, column=2, padx=16)
-        self.theme_btn = ctk.CTkButton(actions, text='◐', width=36, height=34, font=font(15),
-                                       fg_color='transparent', hover_color=SURFACE_2,
-                                       text_color=MUTED, command=self.toggle_theme)
-        self.theme_btn.pack(side='left', padx=(0, 8))
-        self.btn_reset = self._ghost(actions, 'Расставить заново', self.recompute)
-        self.btn_report = self._ghost(actions, 'Сохранить отчёт', self.save_report)
-        self.btn_png = self._ghost(actions, 'Экспорт PNG', self.save_png)
-        ctk.CTkButton(actions, text='Открыть схему', height=34, width=132, font=font(13, 'bold'),
-                      corner_radius=8, fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                      command=self.open).pack(side='left', padx=(8, 0))
+        left = ctk.CTkFrame(h, fg_color='transparent', height=34)
+        left.grid(row=0, column=0, padx=(18, 0))            # без sticky – по центру строки
+        try:                                                # логотип = иконка приложения
+            logo_img = ctk.CTkImage(Image.open(resource('assets/icon.png')), size=(34, 34))
+            ctk.CTkLabel(left, image=logo_img, text='', width=34, height=34).pack(side='left')
+        except OSError:
+            pass
+        ctk.CTkLabel(left, text=APP_NAME, font=font(16, 'bold'), text_color=TEXT,
+                     height=34).pack(side='left', padx=(12, 0))
+
+        actions = ctk.CTkFrame(h, fg_color='transparent', height=40)
+        actions.grid(row=0, column=2, padx=14)
+        self.theme_btn = ctk.CTkButton(actions, text='', image=theme_icon(22), width=40, height=40,
+                                       corner_radius=10, fg_color='transparent',
+                                       hover_color=SURFACE_2, command=self.toggle_theme)
+        self.theme_btn.pack(side='left', padx=(0, 4))
+        self.menu_btn = ctk.CTkButton(actions, text='', image=ctk_icon(dots, 22), width=40,
+                                      height=40, corner_radius=10, fg_color='transparent',
+                                      hover_color=SURFACE_2, command=self.toggle_menu)
+        self.menu_btn.pack(side='left')
         ctk.CTkFrame(self, height=1, fg_color=BORDER, corner_radius=0).grid(
             row=0, column=0, columnspan=3, sticky='sew')
+        self._build_menu()
 
-    def _ghost(self, master, text, cmd):
-        b = ctk.CTkButton(master, text=text, height=34, font=font(13), corner_radius=8,
-                          fg_color=SURFACE, hover_color=SURFACE_2, text_color=TEXT,
-                          border_width=1, border_color=BORDER, command=cmd, state='disabled')
-        b.pack(side='left', padx=4)
-        return b
+    # --- выпадающее меню действий -------------------------------------------
+    def _build_menu(self):
+        m = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=12, border_width=1,
+                         border_color=BORDER)
+        self.menu = m
+        self.menu_items: list[ctk.CTkButton] = []
+        for text, key, cmd in (('Расставить заново', 'Ctrl+R', self.recompute),
+                               ('Сохранить отчёт', '', self.save_report),
+                               ('Экспорт PNG', 'Ctrl+S', self.save_png)):
+            row = ctk.CTkButton(m, text=f'{text}', anchor='w', height=36, width=236,
+                                font=font(13), corner_radius=8, fg_color='transparent',
+                                hover_color=SURFACE_2, text_color=TEXT,
+                                text_color_disabled=MUTED,
+                                command=lambda c=cmd: (self.close_menu(), c()))
+            row.pack(fill='x', padx=6, pady=(6 if not self.menu_items else 0, 0))
+            if key:
+                ctk.CTkLabel(row, text=key, font=font(12), text_color=MUTED,
+                             fg_color='transparent').place(relx=1.0, rely=0.5, x=-12,
+                                                           anchor='e')
+            self.menu_items.append(row)
+        ctk.CTkFrame(m, height=6, fg_color='transparent').pack()
+        self._menu_open = False
+        self.bind('<Button-1>', self._click_outside_menu, add='+')
+        self.bind('<Escape>', lambda e: self.close_menu(), add='+')
+
+    def toggle_menu(self):
+        if self._menu_open:
+            self.close_menu()
+            return
+        state = 'normal' if self.st else 'disabled'
+        for b in self.menu_items:
+            b.configure(state=state)
+        bx = self.menu_btn.winfo_rootx() - self.winfo_rootx() + self.menu_btn.winfo_width()
+        by = self.menu_btn.winfo_rooty() - self.winfo_rooty() + self.menu_btn.winfo_height() + 6
+        self.menu.place(x=bx, y=by, anchor='ne')
+        self.menu.lift()
+        self._menu_open = True
+
+    def close_menu(self):
+        self.menu.place_forget()
+        self._menu_open = False
+
+    def _click_outside_menu(self, ev):
+        if not self._menu_open:
+            return
+        w = ev.widget
+        while w is not None:
+            if w in (self.menu, self.menu_btn) or str(w).startswith(str(self.menu)) \
+                    or str(w).startswith(str(self.menu_btn)):
+                return
+            w = getattr(w, 'master', None)
+        self.close_menu()
 
     def _build_sidebar(self):
         sb = ctk.CTkFrame(self, width=264, fg_color=BG, corner_radius=0)
         sb.grid(row=1, column=0, sticky='nsew', padx=(16, 0), pady=16)
 
-        src = Card(sb, 'Исходник')
+        src = Card(sb)
         src.pack(fill='x', pady=(0, 12))
+        top = ctk.CTkFrame(src, fg_color='transparent', height=30)
+        top.pack(fill='x', padx=(16, 10), pady=(10, 4))
+        ctk.CTkLabel(top, text='ИСХОДНИК', font=font(11, 'bold'), text_color=MUTED,
+                     anchor='w').pack(side='left')
+        self.btn_open = ctk.CTkButton(top, text='', image=ctk_icon(replace, 18), width=30,
+                                      height=30, corner_radius=8, fg_color='transparent',
+                                      hover_color=SURFACE_2, command=self.open)
+        self.btn_open.pack(side='right')
+        self.btn_open.bind('<Enter>', lambda e: self.set_status('Открыть другую схему (Ctrl+O)'),
+                           add='+')
+        self.btn_open.bind('<Leave>', lambda e: self.set_status(), add='+')
         self.thumb = ctk.CTkLabel(src, text='Нет изображения', font=font(12), text_color=MUTED,
                                   width=232, height=96, fg_color=SURFACE_2, corner_radius=8)
         self.thumb.pack(fill='x', padx=16)
         self.src_info = ctk.CTkLabel(src, text='', font=font(12), text_color=MUTED, anchor='w',
                                      justify='left')
         self.src_info.pack(fill='x', padx=16, pady=(6, 12))
-
-        stats = Card(sb, 'Сводка')
-        stats.pack(fill='x', pady=(0, 12))
-        grid = ctk.CTkFrame(stats, fg_color='transparent')
-        grid.pack(fill='x', padx=12, pady=(0, 12))
-        grid.grid_columnconfigure((0, 1), weight=1)
-        self.metrics = {}
-        for i, (key, label) in enumerate((('sw', 'стрелок'), ('joints', 'стыков'),
-                                          ('signals', 'светофоров'), ('sections', 'участков'))):
-            tile = ctk.CTkFrame(grid, fg_color=SURFACE_2, corner_radius=8)
-            tile.grid(row=i // 2, column=i % 2, sticky='nsew', padx=4, pady=4)
-            v = ctk.CTkLabel(tile, text='—', font=font(19, 'bold'), text_color=TEXT, height=24)
-            v.pack(anchor='w', padx=12, pady=(6, 0))
-            ctk.CTkLabel(tile, text=label, font=font(12), text_color=MUTED, height=18).pack(
-                anchor='w', padx=12, pady=(0, 6))
-            self.metrics[key] = v
 
         lay = Card(sb, 'Слои')
         lay.pack(fill='x')
@@ -263,27 +309,48 @@ class App(ctk.CTk):
         c.bind('<Enter>', lambda e: c.focus_set())
 
     def _build_inspector(self):
-        tabs = ctk.CTkTabview(self, width=380, fg_color=SURFACE, corner_radius=12,
-                              border_width=1, border_color=BORDER,
-                              segmented_button_selected_color=ACCENT,
-                              segmented_button_selected_hover_color=ACCENT_HOVER,
-                              segmented_button_unselected_color=SURFACE_2,
-                              segmented_button_fg_color=SURFACE_2, text_color=TEXT)
-        tabs.grid(row=1, column=2, sticky='nsew', padx=(0, 16), pady=(8, 16))
-        for name in ('Проверка', 'Светофоры', 'Отчёт'):
-            tabs.add(name)
-        self.tabs = tabs
-        self.checks_box = ctk.CTkScrollableFrame(tabs.tab('Проверка'), fg_color='transparent')
-        self.checks_box.pack(fill='both', expand=True)
-        self.signals_box = ctk.CTkScrollableFrame(tabs.tab('Светофоры'), fg_color='transparent')
-        self.signals_box.pack(fill='both', expand=True)
-        self.report_box = ctk.CTkTextbox(tabs.tab('Отчёт'), font=ctk.CTkFont('Consolas', 12),
+        panel = ctk.CTkFrame(self, width=380, fg_color=SURFACE, corner_radius=12,
+                             border_width=1, border_color=BORDER)
+        panel.grid(row=1, column=2, sticky='nsew', padx=(0, 16), pady=16)
+        panel.grid_propagate(False)
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(1, weight=1)
+
+        # свой переключатель вкладок: у выбранной – белый текст на акценте
+        seg = ctk.CTkFrame(panel, fg_color=SURFACE_2, corner_radius=10, height=36)
+        seg.grid(row=0, column=0, sticky='ew', padx=12, pady=(12, 8))
+        seg.grid_columnconfigure((0, 1), weight=1)
+        self.tab_btns: dict[str, ctk.CTkButton] = {}
+        for i, name in enumerate(('Светофоры', 'Отчёт')):
+            b = ctk.CTkButton(seg, text=name, height=30, corner_radius=8, font=font(13, 'bold'),
+                              command=lambda n=name: self.select_tab(n))
+            b.grid(row=0, column=i, sticky='ew', padx=3, pady=3)
+            self.tab_btns[name] = b
+
+        # явный фон (не «transparent») – иначе в светлой теме у карточек тёмные углы
+        self.signals_box = ctk.CTkScrollableFrame(panel, fg_color=SURFACE, corner_radius=0,
+                                                  scrollbar_button_color=BORDER)
+        self.report_box = ctk.CTkTextbox(panel, font=ctk.CTkFont('Consolas', 12),
                                          fg_color=SURFACE_2, wrap='word',
                                          corner_radius=8, border_width=0)
-        self.report_box.pack(fill='both', expand=True)
-        self._placeholder(self.checks_box, 'Откройте схему – здесь появится проверка\n'
-                                           'по разделам 2.2–2.5 методички.')
-        self._placeholder(self.signals_box, 'Здесь будет список светофоров с ординатами.')
+        self.tab_pages: dict[str, ctk.CTkScrollableFrame | ctk.CTkTextbox] = {
+            'Светофоры': self.signals_box, 'Отчёт': self.report_box}
+        self._placeholder(self.signals_box, 'Здесь будет список светофоров с ординатами.\n'
+                                            'Клик по карточке — приблизить светофор на схеме.')
+        self.select_tab('Светофоры')
+
+    def select_tab(self, name: str):
+        for n, b in self.tab_btns.items():
+            on = n == name
+            b.configure(fg_color=ACCENT if on else 'transparent',
+                        hover_color=ACCENT_HOVER if on else BORDER,
+                        text_color='#FFFFFF' if on else TEXT)
+        for n, page in self.tab_pages.items():
+            if n == name:
+                page.grid(row=1, column=0, sticky='nsew', padx=(12, 6) if n == 'Светофоры'
+                          else 12, pady=(0, 12))
+            else:
+                page.grid_forget()
 
     def _build_statusbar(self):
         bar = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=30)
@@ -407,9 +474,6 @@ class App(ctk.CTk):
         self.path, self.parsed, self.st, self.annots = path, parsed, st, annots
         self.view = None
         self.src_img = Image.open(path).convert('RGB')
-        self.file_lbl.configure(text=os.path.basename(path))
-        for b in (self.btn_png, self.btn_report, self.btn_reset):
-            b.configure(state='normal')
         self._hide_overlay()
         self._update_source()
         self.refresh_panels()
@@ -463,68 +527,128 @@ class App(ctk.CTk):
         img = ctk.CTkImage(light_image=self.src_img, size=(int(iw * k), int(ih * k)))
         self.thumb.configure(image=img, text='', height=int(ih * k) + 8)
         info = self.parsed['info']
-        self.src_info.configure(text=f'{iw}×{ih} px · наклон исправлен на {info["angle"]:+.1f}°')
+        name = os.path.basename(self.path or '')
+        if len(name) > 34:
+            name = name[:31] + '…'
+        self.src_info.configure(
+            text=f'{name}\n{iw}×{ih} px · наклон исправлен на {info["angle"]:+.1f}°')
 
     def refresh_panels(self):
         st = self.st
         if st is None:
             return
-        self.metrics['sw'].configure(text=str(len(st.sw)))
-        self.metrics['joints'].configure(text=str(len(st.joints)))
-        self.metrics['signals'].configure(text=str(len(st.signals)))
-        self.metrics['sections'].configure(
-            text=str(sum(1 for s in st.sections if s['name'] not in ('перегон',))))
-
-        res = audit(st)
-        ok = sum(1 for r in res if r[0])
-        good = ok == len(res)
-        self.badge.configure(text=f'  {"✓" if good else "!"} {ok}/{len(res)}  ',
-                             fg_color=OK if good else BAD)
-
-        for w in self.checks_box.winfo_children():
-            w.destroy()
-        head = ctk.CTkLabel(self.checks_box, font=font(13, 'bold'), anchor='w',
-                            text_color=OK if good else BAD,
-                            text=('Все пункты методички выполнены' if good else
-                                  f'Есть замечания: {len(res) - ok}'))
-        head.pack(fill='x', padx=6, pady=(4, 8))
-        for passed, what, bad in sorted(res, key=lambda r: r[0]):
-            row = ctk.CTkFrame(self.checks_box, fg_color=SURFACE_2, corner_radius=8)
-            row.pack(fill='x', padx=4, pady=3)
-            ctk.CTkLabel(row, text='✓' if passed else '✕', width=22, font=font(14, 'bold'),
-                         text_color=OK if passed else BAD).pack(side='left', padx=(10, 4),
-                                                                anchor='n', pady=8)
-            body = ctk.CTkFrame(row, fg_color='transparent')
-            body.pack(side='left', fill='x', expand=True, pady=6, padx=(0, 10))
-            ctk.CTkLabel(body, text=what, font=font(12), text_color=TEXT, justify='left',
-                         anchor='w', wraplength=280).pack(fill='x')
-            if bad:
-                ctk.CTkLabel(body, text=bad, font=font(12), text_color=BAD, justify='left',
-                             anchor='w', wraplength=280).pack(fill='x')
-
         for w in self.signals_box.winfo_children():
             w.destroy()
-        for name, kind, x, why in signal_rows(st):
-            row = ctk.CTkFrame(self.signals_box, fg_color=SURFACE_2, corner_radius=8)
+        self._sig_cards = {}
+        self._sig_selected = None
+        for sig, kind, x in signal_rows(st):
+            row = ctk.CTkFrame(self.signals_box, fg_color=SURFACE_2, corner_radius=8,
+                               border_width=1, border_color=SURFACE_2)
             row.pack(fill='x', padx=4, pady=3)
             row.grid_columnconfigure(1, weight=1)
-            ctk.CTkLabel(row, text=name, font=font(14, 'bold'), text_color=TEXT, width=52,
+            ctk.CTkLabel(row, text=sig.name, font=font(14, 'bold'), text_color=TEXT, width=52,
                          anchor='w').grid(row=0, column=0, rowspan=2, padx=(12, 6), pady=6,
                                           sticky='w')
             ctk.CTkLabel(row, text=kind, font=font(12), text_color=TEXT, anchor='w').grid(
                 row=0, column=1, sticky='w', pady=(6, 0))
-            ctk.CTkLabel(row, text=why, font=font(11), text_color=MUTED, anchor='w',
+            ctk.CTkLabel(row, text=sig.why, font=font(11), text_color=MUTED, anchor='w',
                          wraplength=210, justify='left').grid(row=1, column=1, sticky='w',
                                                               pady=(0, 6))
             ctk.CTkLabel(row, text=f'{x:.0f} мм', font=font(12), text_color=MUTED).grid(
                 row=0, column=2, rowspan=2, padx=12)
+            self._make_clickable(row, lambda s=sig: self.focus_signal(s))
+            self._sig_cards[id(sig)] = row
 
-        for box in (self.checks_box, self.signals_box):      # список – с начала
-            box._parent_canvas.yview_moveto(0)
+        self.signals_box._parent_canvas.yview_moveto(0)      # список – с начала
         self.report_box.configure(state='normal')
         self.report_box.delete('1.0', 'end')
         self.report_box.insert('1.0', self._report_text())
         self.report_box.configure(state='disabled')
+
+    # ================================================================ переход к светофору
+    def _make_clickable(self, card: ctk.CTkFrame, command):
+        """Вся карточка (и её подписи) – одна кнопка: ховер, курсор-рука, клик."""
+        def enter(_e):
+            if card is not self._sig_selected:
+                card.configure(fg_color=BORDER)
+
+        def leave(_e):
+            if card is not self._sig_selected:
+                card.configure(fg_color=SURFACE_2)
+
+        widgets = [card, *card.winfo_children()]
+        for w in widgets:
+            w.bind('<Enter>', enter, add='+')
+            w.bind('<Leave>', leave, add='+')
+            w.bind('<Button-1>', lambda _e: command(), add='+')
+            try:
+                w.configure(cursor='hand2')
+            except (tk.TclError, ValueError):
+                pass
+
+    def focus_signal(self, sig):
+        """Плавно приблизить схему к светофору и подсветить его."""
+        if self.st is None or self.transform is None:
+            return
+        prev = self._sig_selected
+        if prev is not None and prev.winfo_exists():
+            prev.configure(fg_color=SURFACE_2, border_color=SURFACE_2)
+        card = self._sig_cards.get(id(sig))
+        if card is not None:
+            card.configure(fg_color=SURFACE_2, border_color=ACCENT)
+        self._sig_selected = card
+
+        x0, y0, x1, y1 = footprint(self.st, sig)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        W, H = self._size()
+        kfit = self._fit()[0]
+        k_t = min(max(min(W / 90.0, H / 55.0), kfit * 2.5), kfit * 60)   # окно ~90×55 мм
+        self._focus = sig
+        self._animate_to(k_t, cx, cy)
+        self.set_status(f'Светофор {sig.name} — {sig.why}')
+
+    def _animate_to(self, k_t, cx, cy, steps=14, interval=16):
+        """Переход камеры за ~0,2 с: масштаб – геометрически, центр – линейно, ease-in-out."""
+        if self._anim_job:
+            self.after_cancel(self._anim_job)
+        assert self.transform is not None
+        W, H = self._size()
+        k0, ox0, oy0 = self.transform
+        c0 = ((W / 2 - ox0) / k0, (H / 2 - oy0) / k0)
+
+        def frame(i):
+            t = i / steps
+            e = 4 * t ** 3 if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
+            k = k0 * (k_t / k0) ** e
+            mx, my = c0[0] + (cx - c0[0]) * e, c0[1] + (cy - c0[1]) * e
+            self.view = (k, W / 2 - mx * k, H / 2 - my * k)
+            self._preview()
+            if i < steps:
+                self._anim_job = self.after(interval, lambda: frame(i + 1))
+            else:
+                self._anim_job = None
+
+        frame(1)
+
+    def _draw_focus(self):
+        """Рамка вокруг выбранного светофора (гаснет через 2 с)."""
+        if self._focus is None or self.st is None or self.transform is None:
+            return
+        k, ox, oy = self.transform
+        x0, y0, x1, y1 = footprint(self.st, self._focus)
+        pad = 2.0
+        color = ACCENT[1] if ctk.get_appearance_mode() == 'Dark' else ACCENT[0]
+        self.cv.create_rectangle((x0 - pad) * k + ox, (y0 - pad) * k + oy,
+                                 (x1 + pad) * k + ox, (y1 + pad) * k + oy,
+                                 outline=color, width=3, tags='focus')
+        if self._focus_job:
+            self.after_cancel(self._focus_job)
+        self._focus_job = self.after(2000, self._clear_focus)
+
+    def _clear_focus(self):
+        self._focus = None
+        self._focus_job = None
+        self.cv.delete('focus')
 
     # ================================================================ отрисовка
     def schedule_redraw(self, delay=80):
@@ -556,6 +680,7 @@ class App(ctk.CTk):
         img, self.transform = self._render(self._size(), self.view)
         self._base = (img, self.transform)
         self._show(img)
+        self._draw_focus()
         self.zoom_lbl.configure(text=f'{self.transform[0] / self._fit()[0] * 100:.0f}%')
 
     def _show(self, img: Image.Image):
@@ -601,14 +726,22 @@ class App(ctk.CTk):
         w, h = self._size()
         self.zoom_at(w / 2, h / 2, factor)
 
+    def _stop_anim(self):
+        if self._anim_job:
+            self.after_cancel(self._anim_job)
+            self._anim_job = None
+
     def zoom_fit(self):
+        self._stop_anim()
         self.view = None
         self.redraw()
 
     def on_wheel(self, ev):
+        self._stop_anim()
         self.zoom_at(ev.x, ev.y, 1.2 if ev.delta > 0 else 1 / 1.2)
 
     def pan_start(self, ev):
+        self._stop_anim()
         if self.transform:
             self._pan = [ev.x, ev.y]
             self.cv.configure(cursor='fleur')
@@ -621,7 +754,7 @@ class App(ctk.CTk):
         self._pan = [ev.x, ev.y]
         k, ox, oy = self.transform
         self.view = self.transform = (k, ox + dx, oy + dy)
-        self.cv.move(self._img_item, dx, dy)
+        self.cv.move('all', dx, dy)                         # картинка и рамка фокуса
         self.schedule_redraw(120)
 
     # ================================================================ мышь
