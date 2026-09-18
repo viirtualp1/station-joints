@@ -158,7 +158,7 @@ def _required(st: Station, e) -> float:
     if a in st.sw and b in st.sw:
         need = MIN_SW
     js = [j for j in st.joints if j.edge == e.id]
-    dem = [an for k, an in getattr(st, 'demands', []) if k == e.id]
+    dem = [an for k, an in st.demands if k == e.id]
     if not js and not dem:
         return need
     offs_a, offs_b = [], []
@@ -289,7 +289,7 @@ def snap_joints(st: Station):
             update_negab(st, [j])
     # стыки в конце стрелочной улицы – строго под стыком соседнего пути
     for j in st.joints:
-        j2 = getattr(j, 'align_to', None)
+        j2 = j.align_to
         if j2 is None:
             continue
         e = g.edges[j.edge]

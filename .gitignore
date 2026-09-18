@@ -1,3 +1,7 @@
 __pycache__
 .env
 run.bat
+build/
+dist/
+.build-venv/
+*.spec

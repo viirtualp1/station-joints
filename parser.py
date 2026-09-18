@@ -10,9 +10,55 @@ import math
 
 import cv2
 import numpy as np
-from skimage.morphology import skeletonize
 
 from graph import Annotation, Graph
+
+
+def _thin_luts():
+    """Таблицы удаления для утончения Го–Холла (Guo, Hall 1989), как в scikit-image."""
+    def bits(n):
+        return [(n >> i) & 1 for i in range(8)]
+
+    def g1(b):
+        return sum(1 for i in (0, 2, 4, 6) if not b[i] and (b[i + 1] or b[(i + 2) % 8])) == 1
+
+    def g2(b):
+        n1 = sum(1 for k in (1, 3, 5, 7) if b[k] or b[k - 1])
+        n2 = sum(1 for k in (1, 3, 5, 7) if b[k] or b[(k + 1) % 8])
+        return min(n1, n2) in (2, 3)
+
+    def g3(b):
+        return not ((b[1] or b[2] or not b[7]) and b[0])
+
+    def g3p(b):
+        return not ((b[5] or b[6] or not b[3]) and b[4])
+
+    lut1 = np.array([g1(bits(n)) and g2(bits(n)) and g3(bits(n)) for n in range(256)])
+    lut2 = np.array([g1(bits(n)) and g2(bits(n)) and g3p(bits(n)) for n in range(256)])
+    return lut1, lut2
+
+
+_LUT1, _LUT2 = _thin_luts()
+# вес соседа (dy, dx) в коде окрестности: E=1, NE=2, N=4, NW=8, W=16, SW=32, S=64, SE=128
+_NB_W = [((0, 1), 1), ((-1, 1), 2), ((-1, 0), 4), ((-1, -1), 8),
+         ((0, -1), 16), ((1, -1), 32), ((1, 0), 64), ((1, 1), 128)]
+
+
+def skeletonize(mask: np.ndarray) -> np.ndarray:
+    """Скелет толщиной 1 пиксель с сохранением 8-связности (утончение Го–Холла,
+    векторно на numpy). Своя реализация вместо scikit-image – без scipy в сборке."""
+    img = np.pad(mask.astype(np.uint8), 1)
+    H, W = img.shape
+    while True:
+        before = int(img.sum())
+        for lut in (_LUT1, _LUT2):
+            code = np.zeros((H - 2, W - 2), np.uint8)
+            for (dy, dx), w in _NB_W:
+                code |= img[1 + dy:H - 1 + dy, 1 + dx:W - 1 + dx] * np.uint8(w)
+            kill = lut[code] & (img[1:-1, 1:-1] == 1)
+            img[1:-1, 1:-1][kill] = 0
+        if int(img.sum()) == before:
+            return img[1:-1, 1:-1].astype(bool)
 
 TARGET_W = 1400
 
@@ -71,7 +117,7 @@ def deskew(gray: np.ndarray, binimg: np.ndarray):
 def split_components(binimg: np.ndarray):
     """Сеть путей – крупные компоненты; всё мелкое (текст, рамка номера) – надписи."""
     H, W = binimg.shape
-    n, lab, stats, _ = cv2.connectedComponentsWithStats(binimg, 8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(binimg, connectivity=8)
     net = np.zeros_like(binimg, bool)
     annots = []
     for i in range(1, n):
@@ -99,7 +145,7 @@ def detach_text(net: np.ndarray, annots: list, sw: float):
     hl = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((1, klen), np.uint8))
     hl = cv2.dilate(hl, np.ones((int(sw) + 2, 3), np.uint8))
     rest = (m > 0) & (hl == 0)
-    n, lab, st, _ = cv2.connectedComponentsWithStats(rest.astype(np.uint8), 8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(rest.astype(np.uint8), connectivity=8)
     hlb = hl > 0
     pad = int(sw) + 3
 
@@ -179,13 +225,13 @@ def stroke_width(mask: np.ndarray) -> float:
 _NB = [(-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1)]
 
 
-def _crossing_number(sk: np.ndarray) -> np.ndarray:
+def _crossing_number(sk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     p = np.pad(sk.astype(np.int8), 1)
     ring = [p[1 + dy:p.shape[0] - 1 + dy, 1 + dx:p.shape[1] - 1 + dx] for dy, dx in _NB]
     cn = np.zeros(sk.shape, np.int8)
     for i in range(8):
         cn += ((ring[i] == 0) & (ring[(i + 1) % 8] == 1)).astype(np.int8)
-    nb = sum(ring)
+    nb = np.sum(np.stack(ring), axis=0)
     return cn, nb
 
 

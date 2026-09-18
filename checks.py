@@ -7,6 +7,11 @@ from __future__ import annotations
 from joints import Station, _nm, _numkey
 
 
+def _num(st: Station, s) -> int:
+    """Номер стрелки числом (0 – если не пронумерована)."""
+    return int(st.g.nodes[s].number or 0)
+
+
 def audit(st: Station) -> list[tuple[bool, str, str]]:
     g = st.g
     out = []
@@ -38,26 +43,26 @@ def audit(st: Station) -> list[tuple[bool, str, str]]:
         if not n.label:
             continue
         _, cur = _walk_to_switch(st, n.id)
-        if cur and (int(n.label[:-1]) % 2) != (int(g.nodes[cur].number) % 2):
+        if cur and (int(n.label[:-1]) % 2) != (_num(st, cur) % 2):
             bad.append(n.label)
     check(not bad, '2.2 тупики: в нечётной горловине – нечётные, в чётной – чётные (…Т)',
           ', '.join(bad))
 
     # 2.3 нумерация стрелок
     bad = [_nm(st, s) for s in st.sw if g.nodes[s].number and
-           (int(g.nodes[s].number) % 2 == 1) != (g.nodes[s].x < st.xc)]
-    nums = [g.nodes[s].number for s in st.sw]
+           (_num(st, s) % 2 == 1) != (g.nodes[s].x < st.xc)]
+    nums = [g.nodes[s].number or '' for s in st.sw]
     dup = {n for n in nums if nums.count(n) > 1}
     check(not bad and not dup and all(nums),
           '2.3 стрелки: нечётная горловина – нечётные, чётная – чётные, без повторов',
           f'не в своей горловине: {bad}; повторы: {sorted(dup)}')
     bad = []
     for c in st.crossovers:
-        a, b = (int(g.nodes[s].number) for s in c['switches'])
+        a, b = (_num(st, s) for s in c['switches'])
         if abs(a - b) != 2:
             bad.append(f'{a}/{b}')
     for c in st.ladders:
-        ns = sorted(int(g.nodes[s].number) for s in c['switches'])
+        ns = sorted(_num(st, s) for s in c['switches'])
         if any(y - x != 2 for x, y in zip(ns, ns[1:])):
             bad.append('улица ' + ','.join(map(str, ns)))
     check(not bad, '2.3 стрелки съездов и стрелочных улиц – непрерывная нумерация', '; '.join(bad))

@@ -198,15 +198,21 @@ def _overlap(a, b):
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
-def report_signals(st: Station) -> list[str]:
-    g = st.g
-    out = []
-    x0 = min(n.x for n in g.nodes.values())
-    kinds = {'entry': 'входной мачтовый', 'exit_mast': 'выходной мачтовый',
+KIND_TEXT = {'entry': 'входной мачтовый', 'exit_mast': 'выходной мачтовый',
              'exit_dwarf': 'выходной карликовый', 'man_dwarf': 'маневровый карликовый',
              'man_mast': 'маневровый мачтовый'}
-    for s in sorted(getattr(st, 'signals', []), key=lambda s: _pos(st, s.joint)[0]):
-        x = _pos(st, s.joint)[0] - x0
-        grp = f' ({s.group})' if s.group else ''
-        out.append(f'  {s.name:<5} {kinds[s.kind]}{grp}, ордината {x:.0f} мм – {s.why}')
-    return out
+
+
+def signal_rows(st: Station) -> list[tuple[str, str, float, str]]:
+    """(имя, тип, ордината от левого края в мм, обоснование) – по возрастанию ординаты."""
+    g = st.g
+    x0 = min(n.x for n in g.nodes.values())
+    rows = []
+    for s in sorted(st.signals, key=lambda s: _pos(st, s.joint)[0]):
+        kind = KIND_TEXT[s.kind] + (f' ({s.group})' if s.group else '')
+        rows.append((s.name, kind, _pos(st, s.joint)[0] - x0, s.why))
+    return rows
+
+
+def report_signals(st: Station) -> list[str]:
+    return [f'  {n:<5} {k}, ордината {x:.0f} мм – {why}' for n, k, x, why in signal_rows(st)]

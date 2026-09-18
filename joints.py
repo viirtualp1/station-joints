@@ -50,6 +50,12 @@ class Station:
     joints: list = field(default_factory=list)
     sections: list = field(default_factory=list)
     log: list = field(default_factory=list)
+    demands: list = field(default_factory=list)     # запросы стыков (для компоновки)
+    signals: list = field(default_factory=list)     # светофоры (signals.Signal)
+    diag_dir: dict = field(default_factory=dict)    # edge id -> направление диагонали
+    geom_check: tuple | None = None                 # (плохие углы, узлы вне сетки)
+    slope_ok: bool = True                           # удалось выдержать наклон диагоналей
+    pending_anchor: object = None                   # привязка, вычисленная _t_near/_t_between
     entry_check: list = field(default_factory=list)  # (сигнал, ok, первая стрелка)
 
 
@@ -156,6 +162,7 @@ def _switch_geometry(st: Station):
                 d = _dev_straight(g, inc[i], inc[j], s)
                 if best is None or d < best[0]:
                     best = (d, i, j)
+        assert best is not None                     # у стрелки ровно 3 ребра
         _, i, j = best
         b = inc[3 - i - j]
         e1, e2 = inc[i], inc[j]
@@ -371,9 +378,9 @@ def _add(st: Station, edge, t, rule, negab=None, why=''):
     L = g.length(e)
     m = min(L * 0.08, 0.2 * st.u)               # не вплотную к узлу, но без сдвига по норме
     t = min(max(t, m), L - m)
-    anchor = st.__dict__.pop('_anchor', None)   # запомнено последним _t_near/_t_between
+    anchor, st.pending_anchor = st.pending_anchor, None   # от последнего _t_near/_t_between
     # все запросы (даже слившиеся с уже стоящим стыком) – для компоновки по нормам
-    st.__dict__.setdefault('demands', []).append((edge, anchor))
+    st.demands.append((edge, anchor))
     for j in st.joints:
         if j.edge == edge and abs(j.t - t) < st.u * 0.2:
             return j
@@ -466,7 +473,7 @@ def _t_between(st, e):
     L = st.g.length(e)
     lo = foul_dist(st, e.a, e.id) if e.a in st.sw else 0.0
     hi = L - (foul_dist(st, e.b, e.id) if e.b in st.sw else 0.0)
-    st._anchor = ('between', lo, L - hi)
+    st.pending_anchor = ('between', lo, L - hi)
     return (lo + hi) / 2 if lo <= hi else L * (lo / (lo + (L - hi)))
 
 
@@ -487,7 +494,7 @@ def update_negab(st: Station, joints=None):
 def _t_near(st, e, node, off):
     """Позиция на ребре e на расстоянии off от узла node."""
     L = st.g.length(e)
-    st._anchor = (node, off)                  # желаемое расстояние – для компоновки
+    st.pending_anchor = (node, off)           # желаемое расстояние – для компоновки
     off = min(off, max(L * 0.4, L - 0.5 * st.u))   # не залезать на другой конец
     return off if e.a == node else L - off
 
@@ -654,10 +661,11 @@ def _align_ladder_ends(st: Station, b_at):
         if chain is None or not chain['switches']:
             continue
         # ближайшая к излому стрелка цепочки
-        idx = chain['nodes'].index(bend) if bend in chain['nodes'] else None
-        if idx is None:
+        nodes = chain['nodes']
+        if bend not in nodes:
             continue
-        s = min(chain['switches'], key=lambda n: abs(chain['nodes'].index(n) - idx))
+        idx = nodes.index(bend)
+        s = min(chain['switches'], key=lambda n: abs(nodes.index(n) - idx))
         if s not in b_at:
             continue
         e2, j2 = b_at[s]

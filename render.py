@@ -206,8 +206,11 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
     if show_grid:
         mx0, mx1 = -ox / k, (W - ox) / k
         my0, my1 = -oy / k, (H - oy) / k
-        steps = [(1, (253, 228, 212), 1)] if mm >= 5 else []
-        steps += [(5, (242, 182, 145), 1), (10, (235, 150, 110), max(1, ss))]
+        # мелкие линии – только когда они различимы, иначе сетка «забивает» схему
+        steps = [(1, (250, 236, 226), 1)] if mm >= 6 else []
+        if mm >= 2.5:
+            steps.append((5, (243, 207, 184), 1))
+        steps.append((10, (236, 172, 136) if mm >= 2.5 else (244, 212, 192), max(1, ss)))
         for step, col, w in steps:
             for i in range(math.floor(mx0 / step), math.ceil(mx1 / step) + 1):
                 if step < 10 and (i * step) % (10 if step == 5 else 5) == 0:
@@ -415,5 +418,5 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             cx, cy = S(*g.point_on(e, (p['t0'] + p['t1']) / 2))
             d.text((cx, cy + 3.0 * mm), s['name'], fill=(0, 120, 60), font=f_sec, anchor='mm')
 
-    img = img.resize((W, H), Image.LANCZOS)
+    img = img.resize((W, H), Image.Resampling.LANCZOS)
     return img, (k, ox, oy)
