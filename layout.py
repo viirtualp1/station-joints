@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 
 from graph import Annotation
+from signals import place_signals
 from joints import (Station, _central_edge, _find_center, _switch_geometry, analyse,
                     place_joints, update_negab)
 
@@ -25,7 +26,7 @@ MIN_EDGE = 5.0       # мин. длина любого горизонтальн�
 MIN_SW = 14.0        # мин. расстояние между соседними стрелками (2 обозначения по 5 мм + зазор)
 MIN_JJ = 8.0         # мин. расстояние между соседними стыками
 MIN_NJ = 5.0         # мин. расстояние от узла до «свободного» стыка
-ENTRY_ZONE = 30.0    # мин. длина участка НП/ЧП между стыками а и в
+ENTRY_ZONE = 40.0    # мин. длина участка НП/ЧП между стыками а и в (помещается входной светофор)
 TRACK_ZONE = 30.0    # мин. длина пути станции между стыками б
 MIN_GAP = 15.0       # зазор между несвязанными отрезками на одной линии сетки
 PP_TEXT = 15.0       # место под надпись «п/п» у конца подъездного пути
@@ -52,6 +53,7 @@ def build_station(graph, annots=()):
     refresh(st)
     place_joints(st)
     snap_joints(st)
+    place_signals(st)
     st.geom_check = check_geometry(st)
     new_annots = _move_annots(st, annots, orig, y0, u0)
     return st, new_annots
@@ -227,6 +229,14 @@ def relax(st: Station) -> bool:
         for a, b in zip(ids, ids[1:]):
             if frozenset((a, b)) not in linked:
                 cons.append((a, b, snap(MIN_GAP, up=True)))
+    # концы главных путей у перегона с одной стороны – на одной ординате: входные
+    # Н и НД (Ч и ЧД) ставятся «на одном уровне» (п. 2.5)
+    for left in (True, False):
+        ends = [n.id for n in g.nodes.values() if n.mark == 'peregon'
+                and (n.x < st.xc) == left]
+        for a, b in zip(ends, ends[1:]):
+            rev.append((a, b, 0))
+            rev.append((b, a, 0))
     ok = _solve(x, cons + rev, len(x))
     st.slope_ok = ok
     if not ok:                                  # цикл (напр., перекрёстный съезд) –

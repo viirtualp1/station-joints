@@ -17,7 +17,8 @@ from PIL import Image, ImageTk
 from graph import Joint
 from joints import (RULE_TEXT, check_entries, compute_sections, name_sections,
                     place_joints, report, update_negab)
-from layout import build_station
+from layout import build_station, snap_joints
+from signals import place_signals
 from parser import parse_image
 from render import fit_view, render
 
@@ -38,7 +39,7 @@ class App(tk.Tk):
         self._redraw_job = None
 
         self.opts = {k: tk.BooleanVar(value=v) for k, v in dict(
-            grid=True, joints=True, letters=True, numbers=True, sections=False,
+            grid=True, joints=True, signals=True, letters=False, numbers=True, sections=False,
             section_names=False, annots=True).items()}
         self.annots = []
         self._build_ui()
@@ -54,7 +55,7 @@ class App(tk.Tk):
         ttk.Button(bar, text='Сохранить PNG…', command=self.save_png).pack(side='left')
         ttk.Button(bar, text='Сохранить отчёт…', command=self.save_report).pack(side='left', padx=4)
         ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=6)
-        labels = dict(grid='Сетка (мм)', joints='Стыки', letters='Буквы правил',
+        labels = dict(grid='Сетка (мм)', joints='Стыки', signals='Светофоры', letters='Буквы правил',
                       numbers='Номера стрелок', sections='Участки цветом',
                       section_names='Имена участков', annots='Надписи')
         for k, text in labels.items():
@@ -157,6 +158,8 @@ class App(tk.Tk):
         if not self.st:
             return
         place_joints(self.st)
+        snap_joints(self.st)
+        place_signals(self.st)
         self.update_report()
         self.redraw()
 
@@ -199,7 +202,7 @@ class App(tk.Tk):
                       show_letters=o['letters'], show_numbers=o['numbers'],
                       show_sections=o['sections'], show_section_names=o['section_names'],
                       show_annots=o['annots'], annots=self.annots, highlight=highlight,
-                      view=view)
+                      view=view, show_signals=o['signals'])
 
     # ----------------------------------------------------------- зум
     def _fit(self):
@@ -330,6 +333,7 @@ class App(tk.Tk):
         self.st.sections = compute_sections(self.st)
         name_sections(self.st)
         check_entries(self.st)
+        place_signals(self.st)            # светофоры стоят на стыках – пересчитать
         self.update_report()
         self.redraw()
 

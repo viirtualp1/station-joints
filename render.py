@@ -56,6 +56,115 @@ def _palette(n):
     return cols
 
 
+from joints import SIG_D as SIG_LAMP, SIG_OFF, SIG_ROW   # общие с расчётом места под светофор
+SIG_STEM = 6.0       # стойка мачты до огней (прил. 1: 6 мм)
+SIG_BASE = 2.0       # полувысота основания мачты
+SIG_BOX = 4.0        # трансформаторный ящик (прил. 1: 4 мм)
+
+
+def _draw_signal(d, st, s, S, mm, lw, font_name, font2):
+    from signals import ENTRY, EXIT_DWARF, EXIT_MAIN, geometry, offset
+    (x, y), (dx, dy), (nx, ny) = geometry(st, s)
+    r = SIG_LAMP / 2
+
+    def pt(along, across):
+        """Точка в мм: along – по ходу от стыка, across – вправо от оси пути."""
+        return S(x + dx * along + nx * across, y + dy * along + ny * across)
+
+    def line(a0, c0, a1, c1, w=0.25):
+        d.line([pt(a0, c0), pt(a1, c1)], fill='black', width=lw(w))
+
+    def lamp(along, across, kind, big=False):
+        rr = r * (1.25 if big else 1.0) * mm
+        cx, cy = pt(along, across)
+        box = [cx - rr, cy - rr, cx + rr, cy + rr]
+        if kind == 'R':
+            d.ellipse(box, fill='black')
+            return
+        d.ellipse(box, outline='black', width=lw(0.25), fill='white')
+        if kind == 'W':
+            q = rr * 0.45
+            d.ellipse([cx - q, cy - q, cx + q, cy + q], outline='black', width=lw(0.2))
+        elif kind == 'B':
+            q = rr * 0.45
+            d.ellipse([cx - q, cy - q, cx + q, cy + q], fill='black')
+        elif kind == 'Y':                       # штриховка
+            for k in (-0.5, 0.0, 0.5):
+                h = math.sqrt(max(0.0, 1 - k * k)) * rr * 0.9
+                ox_, oy_ = k * rr * 0.7071, -k * rr * 0.7071
+                d.line([(cx + ox_ - h * 0.7071, cy + oy_ - h * 0.7071),
+                        (cx + ox_ + h * 0.7071, cy + oy_ + h * 0.7071)], fill='black', width=lw(0.15))
+        elif kind == 'X':                       # заглушка
+            q = rr * 0.7071
+            d.line([(cx - q, cy - q), (cx + q, cy + q)], fill='black', width=lw(0.2))
+            d.line([(cx - q, cy + q), (cx + q, cy - q)], fill='black', width=lw(0.2))
+
+    def two(along, across):                     # «2» – двухнитевая лампа
+        d.text(pt(along, across + r + 1.1), '2', fill='black', font=font2, anchor='mm')
+
+    c = offset(s)
+    if s.kind == 'entry':
+        line(0, c - SIG_BASE, 0, c + SIG_BASE)
+        line(0, c, SIG_STEM, c)
+        a = SIG_STEM + r
+        lamp(a, c, 'W')
+        line(a + r, c, a + r + 1.5, c)
+        a += 2 * r + 1.5
+        for k in reversed(ENTRY):               # от мачты к концу
+            lamp(a + r, c, k)
+            two(a + r, c)
+            a += 2 * r
+        end = a
+    elif s.kind == 'exit_mast':
+        line(0, c - SIG_BASE, 0, c + SIG_BASE)
+        b = SIG_BOX
+        d.polygon([pt(0, c - 1), pt(b, c - 1), pt(b, c + 1), pt(0, c + 1)], outline='black',
+                  width=lw(0.25))
+        line(b / 2, c - 1, b / 2, c + 1)
+        line(b, c, b + 1.5, c)
+        a = b + 1.5
+        for k in reversed(EXIT_MAIN):
+            lamp(a + r, c, k)
+            if k != 'W':
+                two(a + r, c)
+            a += 2 * r
+        end = a
+    elif s.kind == 'exit_dwarf':
+        rows = [c, c + SIG_ROW]
+        line(0, rows[0] - r, 0, rows[1] + r)
+        end = 0
+        for row, lamps in zip(rows, EXIT_DWARF):
+            a = 0
+            for k in reversed(lamps):
+                lamp(a + r, row, k)
+                if k == 'R':                    # двухнитевая лампа на красном (п. 2.5)
+                    d.text(pt(a + 2 * r + 0.9, row), '2', fill='black', font=font2, anchor='mm')
+                a += 2 * r
+            end = max(end, a)
+    else:                                       # маневровые
+        big = s.red
+        first = 'R' if s.red else 'B'
+        if s.kind == 'man_mast':
+            line(0, c - SIG_BASE, 0, c + SIG_BASE)
+            d.polygon([pt(0, c - 1), pt(2.5, c - 1), pt(2.5, c)], outline='black', width=lw(0.25))
+            line(0, c, SIG_STEM, c)
+            a = SIG_STEM
+        else:
+            line(0, c - r * 1.2, 0, c + r * 1.2)
+            a = 0
+        rr = r * (1.25 if big else 1.0)
+        lamp(a + rr, c, first, big)
+        a += 2 * rr
+        lamp(a + r, c, 'W')
+        end = a + 2 * r
+    # название – позади основания (против хода движения)
+    tx, ty = pt(-1.2, c)
+    w = font_name.getlength(s.name)
+    tx += -dx * w / 2
+    d.text((tx, ty), s.name, fill='black', font=font_name, anchor='mm')
+    return end
+
+
 def fit_view(st: Station, size, annots=()):
     """Масштаб и сдвиг, при которых вся схема вписывается в окно."""
     g = st.g
@@ -70,9 +179,10 @@ def fit_view(st: Station, size, annots=()):
     return k, (W - (x1 - x0) * k) / 2 - x0 * k, (H - (y1 - y0) * k) / 2 - y0 * k
 
 
-def render(st: Station, size, *, show_joints=True, show_letters=True,
+def render(st: Station, size, *, show_joints=True, show_letters=False,
            show_numbers=True, show_sections=False, show_section_names=False,
-           show_annots=True, annots=(), view=None, highlight=None, show_grid=False):
+           show_annots=True, annots=(), view=None, highlight=None, show_grid=False,
+           show_signals=True):
     """Возвращает (PIL.Image, transform), transform: модель -> экран (k, ox, oy).
     view=(k, ox, oy) – заданный масштаб/сдвиг (зум); None – вписать всю схему."""
     g = st.g
@@ -158,9 +268,51 @@ def render(st: Station, size, *, show_joints=True, show_letters=True,
         d.line([p1, p2], fill='black', width=lw(LINE_TRACK))
         for p in (p1, p2):
             d.line([p, (p[0] - dx * w, p[1] - dy * w)], fill='black', width=lw(LINE_TRACK))
+        if n.label and show_numbers:            # номер тупика (п. 2.2) – за упором, снаружи
+            d.text((cx - dx * 2.5 * mm, cy), n.label, fill='black',
+                   font=_font(FONT_LETTER * 1.2 * mm), anchor='rm' if dx > 0 else 'lm')
+
+    # ось станции и номера путей с указанием специализации (п. 2.2): пути обезличены –
+    # стрелки в обе стороны, номер пути – над стрелками
+    named = [l for l in st.lines if 'name' in l and l.get('central') in g.edges]
+    if show_numbers and named:
+        free = {}                               # свободная часть пути: между стыками «б»
+        for l in named:
+            e = g.edges[l['central']]
+            xs_ = [g.point_on(e, j.t)[0] for j in st.joints if j.edge == e.id and j.rule == 'б']
+            xa, xb = sorted((g.nodes[e.a].x, g.nodes[e.b].x))
+            if len(xs_) >= 2:
+                xa, xb = min(xs_), max(xs_)
+            free[id(l)] = (xa + 9, xb - 9)          # у стыков «б» – светофоры с подписями
+        lo = max(v[0] for v in free.values())
+        hi = min(v[1] for v in free.values())
+        ax = (lo + hi) / 2 if lo < hi else st.xc
+        xs = S(ax, 0)[0]
+        ys = [l['y'] for l in named]
+        y_top, y_bot = S(0, min(ys) - 6)[1], S(0, max(ys) + 6)[1]
+        yy, dash = y_top, 2.0 * mm
+        while yy < y_bot:                       # штриховая ось станции
+            d.line([(xs, yy), (xs, min(yy + dash, y_bot))], fill='black', width=lw(0.2))
+            yy += dash * 1.8
+        f_tr = _font(FONT_LETTER * 1.2 * mm)
+        for l in named:
+            a0, a1 = free[id(l)]
+            mx = ax if a0 + 3 <= ax <= a1 - 3 else (a0 + a1) / 2
+            if True:
+                cx, cy = S(mx, l['y'])
+                a, h = 2.2 * mm, 0.9 * mm
+                for sgn in (-1, 1):             # ◀▶
+                    d.polygon([(cx + sgn * 0.3 * mm, cy - h), (cx + sgn * (0.3 * mm + a), cy),
+                               (cx + sgn * 0.3 * mm, cy + h)], fill='black')
+                d.text((cx - 1.0 * mm, cy - 2.2 * mm), f"{l['name']}П", fill='black',
+                       font=f_tr, anchor='rb')
 
     f_num = _font(FONT_NUM * mm)
     f_letter = _font(FONT_LETTER * mm)
+    sig_boxes = []
+    if show_signals:
+        from signals import footprint
+        sig_boxes = [footprint(st, s) for s in getattr(st, 'signals', [])]
 
     # стрелки (прил. 1): со стороны остряков, на стороне ответвления –
     # закрашенный прямоугольник 3×1 мм и тонкая линия 5 мм
@@ -179,12 +331,45 @@ def render(st: Station, size, *, show_joints=True, show_letters=True,
         d.line([la, (la[0] + tx * SW_LINE * mm, la[1] + ty * SW_LINE * mm)],
                fill='black', width=lw(LINE_THIN))
         if show_numbers and n.number:
-            # номер – со стороны, противоположной ответвлению
-            px = cx + tx * SW_BAR / 2 * mm - nx * 3.0 * mm
-            py = cy + ty * SW_BAR / 2 * mm - ny * 3.0 * mm
+            # номер – со стороны, противоположной ответвлению; если там светофор –
+            # на стороне ответвления, над обозначением стрелки
+            # п. 2.3: номер пишут со стороны привода – со стороны поля или широкого
+            # междупутья; при равных междупутьях – напротив ответвления
+            mx_, my_ = n.x + tx * SW_BAR / 2 * st.u / 10, n.y + ty * SW_BAR / 2 * st.u / 10
+            side = -1.0
+            if abs(ty) < 0.2:                   # стрелка на горизонтальном пути
+                gap = {}
+                for sgn in (-1, 1):             # -1: напротив ответвления, +1: со стороны
+                    dirn = sgn * (1 if ny > 0 else -1)          # +1 – вниз по экрану
+                    ds = [(l['y'] - n.y) * dirn for l in st.lines
+                          if l['x0'] - 1 <= n.x <= l['x1'] + 1 and (l['y'] - n.y) * dirn > 0.5]
+                    gap[sgn] = min(ds) if ds else 1e9
+                if gap[1] > gap[-1] + 1.0:
+                    side = 1.0 + SW_BAR_H / 3.0
+            # если на месте номера светофор – пробуем другую сторону, затем место
+            # перед стрелкой (со стороны ответвления номер не мешает обозначению)
+            other = -1.0 if side > 0 else 1.0 + SW_BAR_H / 3.0
+            u10 = st.u / 10
+            cands = [(side, SW_BAR / 2), (other, SW_BAR / 2), (side, -3.5), (other, -3.5)]
+
+            hw = 0.5 + 1.1 * len(n.number)          # полуширина номера, мм
+
+            def busy(sd, al):
+                qx = n.x + tx * al * u10 + sd * nx * 3.0 * u10
+                qy = n.y + ty * al * u10 + sd * ny * 3.0 * u10
+                return any(b[0] - hw < qx < b[2] + hw and b[1] - 1.8 < qy < b[3] + 1.8
+                           for b in sig_boxes)
+            side, along = next((c for c in cands if not busy(*c)), cands[0])
+            px = cx + tx * along * mm + side * nx * 3.0 * mm
+            py = cy + ty * along * mm + side * ny * 3.0 * mm
             d.text((px, py), n.number, fill='black', font=f_num, anchor='mm')
 
     # стыки (прил. 1): 2 мм высота, полочки 2 мм; негабаритный – в окружности Ø6
+    sig_side = {}                                   # стык -> сторона, где стоит светофор
+    if show_signals:
+        from signals import geometry
+        for s in getattr(st, 'signals', []):
+            sig_side.setdefault(id(s.joint), []).append(geometry(st, s)[2])
     if show_joints:
         for j in st.joints:
             e = g.edges[j.edge]
@@ -206,8 +391,18 @@ def render(st: Station, size, *, show_joints=True, show_letters=True,
                 d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=c, width=lw(LINE_THIN))
             if show_letters:
                 off = (NEGAB_D / 2 + 1.8) * mm if j.negab else (JOINT_H / 2 + 2.0) * mm
+                # светофор на этом стыке с той же стороны – букву пишем с другой
+                if any(sx * nx + sy * ny > 0.3 for sx, sy in sig_side.get(id(j), [])):
+                    off = -off
                 d.text((cx + nx * off, cy + ny * off), j.rule,
                        fill=BLUE if j.rule != 'р' else RED, font=f_letter, anchor='mm')
+
+    # светофоры
+    if show_signals:
+        f_sig = _font(FONT_LETTER * 1.2 * mm)
+        f_two = _font(1.5 * mm)
+        for s in getattr(st, 'signals', []):
+            _draw_signal(d, st, s, S, mm, lw, f_sig, f_two)
 
     # имена участков
     if show_section_names:

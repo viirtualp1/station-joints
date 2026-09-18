@@ -1,4 +1,4 @@
-"""Без GUI: python cli.py схема.jpg результат.png [--sections] [--names] [--grid]"""
+"""Без GUI: python cli.py схема.jpg результат.png [--sections] [--names] [--grid] [--letters]"""
 import sys
 
 from joints import report
@@ -14,7 +14,8 @@ def main():
     img, _ = render(st, (2000, 1000), annots=annots,
                     show_sections='--sections' in sys.argv,
                     show_section_names='--names' in sys.argv,
-                    show_grid='--grid' in sys.argv)
+                    show_grid='--grid' in sys.argv,
+                    show_letters='--letters' in sys.argv)
     img.save(out)
     print(report(st))
 

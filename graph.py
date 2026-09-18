@@ -12,6 +12,7 @@ class Node:
     y: float
     mark: str | None = None      # 'tupik' | 'pp' | 'peregon' для концов
     number: str | None = None    # номер стрелки по методичке
+    label: str | None = None     # имя конца пути: тупик «1Т», «2Т»…
 
 
 @dataclass
