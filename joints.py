@@ -341,10 +341,13 @@ def _add(st: Station, edge, t, rule, negab=None, why=''):
     e = g.edges[edge]
     L = g.length(e)
     t = min(max(t, L * 0.08), L * 0.92)
+    anchor = st.__dict__.pop('_anchor', None)   # запомнено последним _t_near/_t_between
+    # все запросы (даже слившиеся с уже стоящим стыком) – для компоновки по нормам
+    st.__dict__.setdefault('demands', []).append((edge, anchor))
     for j in st.joints:
         if j.edge == edge and abs(j.t - t) < st.u * 0.2:
             return j
-    j = Joint(edge, t, rule, bool(negab), fixed=negab is not None)
+    j = Joint(edge, t, rule, bool(negab), fixed=negab is not None, anchor=anchor)
     st.joints.append(j)
     if why:
         st.log.append(f'  [{rule}] {why}')
@@ -357,7 +360,7 @@ def _add(st: Station, edge, t, rule, negab=None, why=''):
 # (схема не в масштабе по длине, поэтому всё приближённо).
 FOUL = 4.1 / 5.3
 MARGIN = 3.5 / 5.3 * 0.5
-FRAME = 0.2          # стык у рамного рельса (3–5 м) со стороны остряков
+FRAME = 0.5          # стык у рамного рельса (3–5 м) со стороны остряков – за утолщением стрелки
 
 
 def foul_dist(st: Station, s, edge_id) -> float:
@@ -388,6 +391,7 @@ def _t_between(st, e):
     L = st.g.length(e)
     lo = foul_dist(st, e.a, e.id) if e.a in st.sw else 0.0
     hi = L - (foul_dist(st, e.b, e.id) if e.b in st.sw else 0.0)
+    st._anchor = ('between', lo, L - hi)
     return (lo + hi) / 2 if lo <= hi else L * (lo / (lo + (L - hi)))
 
 
@@ -408,7 +412,8 @@ def update_negab(st: Station, joints=None):
 def _t_near(st, e, node, off):
     """Позиция на ребре e на расстоянии off от узла node."""
     L = st.g.length(e)
-    off = min(off, L * 0.4)
+    st._anchor = (node, off)                  # желаемое расстояние – для компоновки
+    off = min(off, max(L * 0.4, L - 0.5 * st.u))   # не залезать на другой конец
     return off if e.a == node else L - off
 
 
@@ -421,6 +426,7 @@ def place_joints(st: Station):
     u = st.u
     st.joints.clear()
     st.log.clear()
+    st.demands = []
 
     # а, в – главные пути у перегона: зона между входным стыком (а) и стыком
     # у первой стрелки (в) – бесстрелочный участок НП / НДП / ЧП / ЧДП
@@ -571,6 +577,7 @@ def _align_ladder_ends(st: Station, b_at):
         t = (x_target - ax) / (bx - ax) * L if bx != ax else j.t
         if 0.05 * L < t < 0.95 * L:
             j.t = t
+            j.anchor = (bend, t if e.a == bend else L - t)
 
 
 def _walk_to_switch(st: Station, end):
@@ -753,6 +760,11 @@ def report(st: Station) -> str:
     out.append(f'Стрелок: {len(st.sw)}, путей станции: {len([l for l in st.lines if "name" in l])}, '
                f'съездов: {len(st.crossovers)}, стрелочных улиц: {len(st.ladders)}')
     out.append(f'Стыков: {len(st.joints)} (негабаритных: {sum(j.negab for j in st.joints)})')
+    if abs(st.u - 10) < 1e-6:
+        x0 = min(n.x for n in g.nodes.values())
+        out.append('Миллиметровка: 1 клетка = 10 мм = междупутье; ординаты от левого края, мм:')
+        sws = sorted(st.sw, key=lambda s: _numkey(_nm(st, s)))
+        out.append('  ' + ', '.join(f'{_nm(st, s)}: {g.nodes[s].x - x0:.1f}' for s in sws))
     out.append('')
     out.append('Въезды (зона между стыками а и в):')
     for sig, ok, first in st.entry_check:

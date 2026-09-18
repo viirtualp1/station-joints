@@ -28,6 +28,7 @@ class Joint:
     rule: str                    # буква правила методички (а..и) или 'р' – ручной
     negab: bool = False          # негабаритный (в окружности)
     fixed: bool = False          # габаритность задана правилом/вручную, не пересчитывать
+    anchor: object = None        # (узел, желаемое расстояние) | ('between', da, db) | None
 
 
 @dataclass
@@ -38,6 +39,7 @@ class Annotation:
     x1: int
     y1: int
     mask: object                 # numpy bool array
+    scale: float = 1.0           # размер пикселя маски в единицах модели
 
 
 class Graph:

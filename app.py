@@ -15,8 +15,9 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 
 from graph import Joint
-from joints import (RULE_TEXT, analyse, check_entries, compute_sections, name_sections,
+from joints import (RULE_TEXT, check_entries, compute_sections, name_sections,
                     place_joints, report, update_negab)
+from layout import build_station
 from parser import parse_image
 from render import render
 
@@ -35,8 +36,9 @@ class App(tk.Tk):
         self._redraw_job = None
 
         self.opts = {k: tk.BooleanVar(value=v) for k, v in dict(
-            joints=True, letters=True, numbers=True, sections=False,
-            section_names=False, background=False, annots=True).items()}
+            grid=True, joints=True, letters=True, numbers=True, sections=False,
+            section_names=False, annots=True).items()}
+        self.annots = []
         self._build_ui()
         if path:
             self.after(100, lambda: self.load(path))
@@ -50,9 +52,9 @@ class App(tk.Tk):
         ttk.Button(bar, text='Сохранить PNG…', command=self.save_png).pack(side='left')
         ttk.Button(bar, text='Сохранить отчёт…', command=self.save_report).pack(side='left', padx=4)
         ttk.Separator(bar, orient='vertical').pack(side='left', fill='y', padx=6)
-        labels = dict(joints='Стыки', letters='Буквы правил', numbers='Номера стрелок',
-                      sections='Участки цветом', section_names='Имена участков',
-                      background='Исходник подложкой', annots='Надписи')
+        labels = dict(grid='Сетка (мм)', joints='Стыки', letters='Буквы правил',
+                      numbers='Номера стрелок', sections='Участки цветом',
+                      section_names='Имена участков', annots='Надписи')
         for k, text in labels.items():
             ttk.Checkbutton(bar, text=text, variable=self.opts[k],
                             command=self.redraw).pack(side='left', padx=2)
@@ -104,9 +106,8 @@ class App(tk.Tk):
         def work():
             try:
                 parsed = parse_image(path)
-                st = analyse(parsed['graph'])
-                place_joints(st)
-                self.after(0, lambda: self._loaded(path, parsed, st))
+                st, annots = build_station(parsed['graph'], parsed['annots'])
+                self.after(0, lambda: self._loaded(path, parsed, st, annots))
             except Exception as ex:           # показываем ошибку, а не падаем
                 self.after(0, lambda: self._failed(ex))
 
@@ -117,9 +118,9 @@ class App(tk.Tk):
         self.status.set('Ошибка распознавания')
         messagebox.showerror('Ошибка', str(ex))
 
-    def _loaded(self, path, parsed, st):
+    def _loaded(self, path, parsed, st, annots):
         self.config(cursor='')
-        self.parsed, self.st = parsed, st
+        self.parsed, self.st, self.annots = parsed, st, annots
         self.src_img = Image.open(path).convert('RGB')
         g = st.g
         info = parsed['info']
@@ -170,11 +171,10 @@ class App(tk.Tk):
 
     def _render(self, size, highlight=None):
         o = {k: v.get() for k, v in self.opts.items()}
-        bg = self.parsed['gray'] if o['background'] else None
-        return render(self.st, size, background=bg, show_joints=o['joints'],
+        return render(self.st, size, show_grid=o['grid'], show_joints=o['joints'],
                       show_letters=o['letters'], show_numbers=o['numbers'],
                       show_sections=o['sections'], show_section_names=o['section_names'],
-                      show_annots=o['annots'], annots=self.parsed['annots'], highlight=highlight)
+                      show_annots=o['annots'], annots=self.annots, highlight=highlight)
 
     def redraw(self, highlight=None):
         self._redraw_job = None

@@ -34,7 +34,7 @@ def _palette(n):
 
 def render(st: Station, size, *, background=None, show_joints=True, show_letters=True,
            show_numbers=True, show_sections=False, show_section_names=False,
-           show_annots=True, annots=(), zoom=None, highlight=None):
+           show_annots=True, annots=(), zoom=None, highlight=None, show_grid=False):
     """Возвращает (PIL.Image, transform), transform: модель -> экран (k, ox, oy)."""
     g = st.g
     W, H = size
@@ -65,6 +65,27 @@ def render(st: Station, size, *, background=None, show_joints=True, show_letters
         px, py = P(x, y)
         return px * ss, py * ss
 
+    # миллиметровка: 1 мм – тонкие, 5 мм – средние, 10 мм (клетка = междупутье) – жирные
+    if show_grid:
+        mx0, mx1 = -ox / k, (W - ox) / k
+        my0, my1 = -oy / k, (H - oy) / k
+        px_mm = k * ss
+        steps = [(1, (253, 228, 212), 1)] if px_mm >= 5 else []
+        steps += [(5, (248, 200, 170), 1), (10, (235, 150, 110), max(1, ss))]
+        for step, col, w in steps:
+            i0, i1 = math.floor(mx0 / step), math.ceil(mx1 / step)
+            for i in range(i0, i1 + 1):
+                if step < 10 and (i * step) % (10 if step == 5 else 5) == 0:
+                    continue
+                X = S(i * step, 0)[0]
+                d.line([(X, 0), (X, H * ss)], fill=col, width=w)
+            i0, i1 = math.floor(my0 / step), math.ceil(my1 / step)
+            for i in range(i0, i1 + 1):
+                if step < 10 and (i * step) % (10 if step == 5 else 5) == 0:
+                    continue
+                Y = S(0, i * step)[1]
+                d.line([(0, Y), (W * ss, Y)], fill=col, width=w)
+
     u = st.u * k * ss                       # междупутье в экранных пикселях
     lw = max(2, int(u * 0.045))
     main_edges = set()
@@ -79,7 +100,8 @@ def render(st: Station, size, *, background=None, show_joints=True, show_letters
                 continue
             glyph = Image.fromarray(m.astype(np.uint8) * 255, 'L')
             gw, gh = glyph.size
-            glyph = glyph.resize((max(1, int(gw * k * ss)), max(1, int(gh * k * ss))))
+            sc = getattr(a, 'scale', 1.0) * k * ss
+            glyph = glyph.resize((max(1, int(gw * sc)), max(1, int(gh * sc))))
             px, py = S(a.x0, a.y0)
             img.paste((60, 60, 60), (int(px), int(py)), glyph)
 
@@ -133,7 +155,7 @@ def render(st: Station, size, *, background=None, show_joints=True, show_letters
         e = g.edges[info['trunk']]
         dx, dy = g.direction(e, s)
         cx, cy = S(n.x, n.y)
-        L = min(u * 0.28, g.length(e) * k * ss * 0.45)
+        L = min(u * 0.25, g.length(e) * k * ss * 0.4)
         d.line([(cx, cy), (cx + dx * L, cy + dy * L)], fill='black', width=int(lw * 2.8))
         if show_numbers and n.number:
             # номер – сбоку от пути, со стороны, противоположной ответвлению
