@@ -95,8 +95,8 @@ class App(tk.Tk):
         self.status = tk.StringVar(value='Откройте картинку со схемой станции (jpg/png).')
         ttk.Label(self, textvariable=self.status, anchor='w', padding=3).pack(side='bottom', fill='x')
 
-        for c in (self.cv, self.cv_src):
-            c.bind('<Configure>', lambda e: self.schedule_redraw())
+        self.cv.bind('<Configure>', lambda e: self.schedule_redraw())
+        self.cv_src.bind('<Configure>', lambda e: self.after_idle(self.redraw_src))
         self.cv.bind('<Button-1>', self.on_click)
         self.cv.bind('<Button-3>', self.on_right)
         self.cv.bind('<Motion>', self.on_motion)
@@ -150,6 +150,7 @@ class App(tk.Tk):
         self.status.set(f'Готово: узлов {len(g.nodes)}, рёбер {len(g.edges)}, стрелок {len(st.sw)}, '
                         f'стыков {len(st.joints)}. Наклон фото исправлен на {info["angle"]:.1f}°.')
         self.update_report()
+        self.redraw_src()
         self.redraw()
 
     def recompute(self):
@@ -214,7 +215,7 @@ class App(tk.Tk):
         nk = min(max(k * factor, kfit * 0.5), kfit * 60)
         f = nk / k
         self.view = (nk, sx - (sx - ox) * f, sy - (sy - oy) * f)
-        self.schedule_redraw()
+        self._preview()
 
     def zoom_center(self, factor):
         self.zoom_at(self.cv.winfo_width() / 2, self.cv.winfo_height() / 2, factor)
@@ -228,35 +229,74 @@ class App(tk.Tk):
 
     def pan_start(self, ev):
         if self.transform:
-            self._pan = (ev.x, ev.y, *self.transform)
+            self._pan = [ev.x, ev.y]
             self.cv.configure(cursor='fleur')
 
     def pan_move(self, ev):
-        if not self._pan:
+        """Перетаскивание: просто сдвигаем готовую картинку на холсте (без перерисовки),
+        чёткая перерисовка с дорисовкой краёв – когда мышь остановится."""
+        if not self._pan or not self.transform:
             return
-        x0, y0, k, ox, oy = self._pan
-        self.view = (k, ox + ev.x - x0, oy + ev.y - y0)
-        self.schedule_redraw()
+        dx, dy = ev.x - self._pan[0], ev.y - self._pan[1]
+        self._pan = [ev.x, ev.y]
+        k, ox, oy = self.transform
+        self.view = self.transform = (k, ox + dx, oy + dy)
+        self.cv.move(self._img_item, dx, dy)
+        self._schedule_sharp(120)
+
+    def redraw_src(self):
+        if self.src_img is None:
+            return
+        w, h = max(10, self.cv_src.winfo_width()), max(10, self.cv_src.winfo_height())
+        iw, ih = self.src_img.size
+        k = min(w / iw, h / ih)
+        im = self.src_img.resize((max(1, int(iw * k)), max(1, int(ih * k))), Image.LANCZOS)
+        self._tk_imgs['src'] = ImageTk.PhotoImage(im)
+        self.cv_src.delete('all')
+        self.cv_src.create_image(w // 2, h // 2, image=self._tk_imgs['src'])
 
     def redraw(self, highlight=None):
+        """Полная (чёткая) перерисовка схемы."""
         self._redraw_job = None
-        # исходник
-        if self.src_img is not None:
-            w, h = max(10, self.cv_src.winfo_width()), max(10, self.cv_src.winfo_height())
-            iw, ih = self.src_img.size
-            k = min(w / iw, h / ih)
-            im = self.src_img.resize((max(1, int(iw * k)), max(1, int(ih * k))), Image.LANCZOS)
-            self._tk_imgs['src'] = ImageTk.PhotoImage(im)
-            self.cv_src.delete('all')
-            self.cv_src.create_image(w // 2, h // 2, image=self._tk_imgs['src'])
-        # схема
-        if self.st is not None:
-            w, h = max(10, self.cv.winfo_width()), max(10, self.cv.winfo_height())
-            img, self.transform = self._render((w, h), highlight, self.view)
-            self._tk_imgs['res'] = ImageTk.PhotoImage(img)
-            self.cv.delete('all')
-            self.cv.create_image(0, 0, anchor='nw', image=self._tk_imgs['res'])
-            self.zoom_lbl.configure(text=f'{self.transform[0] / self._fit()[0] * 100:.0f}%')
+        if self.st is None:
+            return
+        w, h = max(10, self.cv.winfo_width()), max(10, self.cv.winfo_height())
+        img, self.transform = self._render((w, h), highlight, self.view)
+        self._base = (img, self.transform)
+        self._show(img)
+        self.zoom_lbl.configure(text=f'{self.transform[0] / self._fit()[0] * 100:.0f}%')
+
+    def _show(self, img):
+        """Вывести картинку на холст (переиспользуя PhotoImage – это быстрее)."""
+        ph = self._tk_imgs.get('res')
+        if ph is not None and (ph.width(), ph.height()) == img.size:
+            ph.paste(img)
+        else:
+            self._tk_imgs['res'] = ph = ImageTk.PhotoImage(img)
+        self.cv.delete('all')
+        self._img_item = self.cv.create_image(0, 0, anchor='nw', image=ph)
+
+    def _preview(self):
+        """Мгновенный предпросмотр при зуме: масштабируем уже готовую картинку,
+        чёткая перерисовка – когда колесо остановится."""
+        base = getattr(self, '_base', None)
+        if base is None:
+            return
+        img, (k0, ox0, oy0) = base
+        k, ox, oy = self.view
+        f = k / k0
+        dx, dy = ox - ox0 * f, oy - oy0 * f
+        prev = img.transform(img.size, Image.AFFINE, (1 / f, 0, -dx / f, 0, 1 / f, -dy / f),
+                             resample=Image.BILINEAR, fillcolor='white')
+        self.transform = self.view
+        self._show(prev)
+        self.zoom_lbl.configure(text=f'{k / self._fit()[0] * 100:.0f}%')
+        self._schedule_sharp()
+
+    def _schedule_sharp(self, delay=140):
+        if self._redraw_job:
+            self.after_cancel(self._redraw_job)
+        self._redraw_job = self.after(delay, self.redraw)
 
     # ----------------------------------------------------------- мышь
     def _to_model(self, ev):

@@ -97,7 +97,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=True,
         mx0, mx1 = -ox / k, (W - ox) / k
         my0, my1 = -oy / k, (H - oy) / k
         steps = [(1, (253, 228, 212), 1)] if mm >= 5 else []
-        steps += [(5, (248, 200, 170), 1), (10, (235, 150, 110), max(1, ss))]
+        steps += [(5, (242, 182, 145), 1), (10, (235, 150, 110), max(1, ss))]
         for step, col, w in steps:
             for i in range(math.floor(mx0 / step), math.ceil(mx1 / step) + 1):
                 if step < 10 and (i * step) % (10 if step == 5 else 5) == 0:

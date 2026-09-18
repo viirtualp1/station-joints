@@ -262,16 +262,16 @@ def _central_edge(st: Station, line):
     ось его не пересекает (после раздвижки) – самый длинный отрезок между
     стрелками/изломами этого пути."""
     g = st.g
+    # путь станции: средняя часть запомнена при анализе исходной картинки
+    # (там ось станции надёжна); компоновка топологию не меняет – ребро то же
+    if line.get('central') in g.edges:
+        return g.edges[line['central']]
     for k in line['edges']:
         e = g.edges[k]
         xa, xb = sorted((g.nodes[e.a].x, g.nodes[e.b].x))
         if xa <= st.xc <= xb:
             return e
-    if 'name' not in line:
-        return None
-    inner = [g.edges[k] for k in line['edges']
-             if g.degree(g.edges[k].a) >= 2 and g.degree(g.edges[k].b) >= 2]
-    return max(inner, key=g.length, default=None)
+    return None
 
 
 def _name_tracks(st: Station):
@@ -297,6 +297,7 @@ def _name_tracks(st: Station):
             e = _central_edge(st, l)
             if e:
                 st.track_names[e.id] = names[id(l)]
+                l['central'] = e.id
             l['name'] = names[id(l)]
     # входные светофоры: слева нечётная горловина (Н), справа чётная (Ч)
     for l in st.mains:
@@ -584,6 +585,7 @@ def _align_ladder_ends(st: Station, b_at):
         t = (x_target - ax) / (bx - ax) * L if bx != ax else j.t
         if 0.5 < t < L - 0.5:                   # хоть 1 мм от излома – но строго под соседним
             j.t = t
+            j.align_to = j2                     # держать ординату и после округления
             j.anchor = (bend, t if e.a == bend else L - t)
 
 
@@ -775,7 +777,7 @@ def report(st: Station) -> str:
         chk = getattr(st, 'geom_check', None)
         if chk is not None:
             bad, off = chk
-            out.append('Проверка чертежа: диагонали под 30° – '
+            out.append('Проверка чертежа: диагонали 10 мм по высоте на 15 мм по горизонтали – '
                        + ('все' if not bad else f'НЕ все ({len(bad)}: {bad})')
                        + '; узлы на линиях сетки – ' + ('все' if not off else f'НЕ все ({len(off)})'))
     out.append('')

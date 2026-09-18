@@ -2,9 +2,9 @@
 
 Схема перечерчивается так, как её чертили бы на миллиметровой бумаге:
   * междупутье = 1 клетка = 10 мм, все пути лежат на линиях сетки 10 мм;
-  * все диагонали (съезды, стрелочные улицы, ответвления) – под 30° (прил. 1);
-  * все узлы (стрелки, изломы, концы) – на линиях миллиметровки (целые мм),
-    поэтому проекция диагонали на 1 междупутье = 17 мм (угол 30,5°);
+  * все диагонали (съезды, стрелочные улицы, ответвления) – одного наклона:
+    10 мм по высоте на 15 мм по горизонтали (DIAG_RUN);
+  * все узлы (стрелки, изломы, концы) – на линиях миллиметровки (целые мм);
   * между элементами выдерживаются минимальные расстояния (см. ниже);
   * если стыки не помещаются, схема раздвигается по горизонтали, наклон
     диагоналей и взаимный порядок элементов при этом не меняются.
@@ -18,7 +18,7 @@ import math
 
 from graph import Annotation
 from joints import (Station, _central_edge, _find_center, _switch_geometry, analyse,
-                    place_joints)
+                    place_joints, update_negab)
 
 CELL = 10.0          # мм – междупутье
 MIN_EDGE = 5.0       # мин. длина любого горизонтального отрезка между узлами
@@ -29,6 +29,14 @@ ENTRY_ZONE = 30.0    # мин. длина участка НП/ЧП между с
 TRACK_ZONE = 30.0    # мин. длина пути станции между стыками б
 MIN_GAP = 15.0       # зазор между несвязанными отрезками на одной линии сетки
 PP_TEXT = 15.0       # место под надпись «п/п» у конца подъездного пути
+GRID_X = 5           # шаг сетки для узлов по горизонтали, мм: стрелки, повороты, концы
+                     # стоят на линиях 5 мм (диагональ 15 мм кратна 5 – оба её конца на сетке)
+
+
+def snap(v: float, up=False) -> int:
+    """Округление до линии сетки GRID_X (up=True – вверх, для минимальных длин)."""
+    q = v / GRID_X
+    return int((math.ceil(q - 1e-6) if up else round(q)) * GRID_X)
 MARGIN = 20.0        # поля листа слева/сверху
 
 
@@ -43,6 +51,7 @@ def build_station(graph, annots=()):
             break
     refresh(st)
     place_joints(st)
+    snap_joints(st)
     st.geom_check = check_geometry(st)
     new_annots = _move_annots(st, annots, orig, y0, u0)
     return st, new_annots
@@ -70,19 +79,50 @@ def to_grid(st: Station):
         for y in lv:
             row_of[y] = r
         prev = r
-    for n in g.nodes.values():
-        n.y = MARGIN + row_of[n.y] * CELL
-        n.x = round(MARGIN + (n.x - x0) / u * CELL)     # на линии сетки (1 мм)
-    # направление каждой диагонали (вправо/влево) берём с картинки,
-    # а наклон дальше задаётся строго 30° (прил. 1)
+    # направление каждой диагонали (вправо/влево) берём с картинки ДО округления
+    # (у крутых улиц отрезок между соседними стрелками короче шага сетки);
+    # у цепочки (улица, съезд) направление общее – по её концам
     st.diag_dir = {}
     for e in g.edges.values():
         na, nb = g.nodes[e.a], g.nodes[e.b]
-        if abs(na.y - nb.y) > 1e-6:
+        if abs(row_of[na.y] - row_of[nb.y]) > 0:
             st.diag_dir[e.id] = 1 if nb.x >= na.x else -1
+    for c in st.chains:
+        ns = c['nodes']
+        first, last = g.nodes[ns[0]], g.nodes[ns[-1]]
+        if row_of[first.y] == row_of[last.y]:
+            continue
+        # знак «x растёт вместе с y» для всей цепочки
+        s = 1 if (last.x - first.x) * (last.y - first.y) >= 0 else -1
+        for k in c['edges']:
+            e = g.edges[k]
+            na, nb = g.nodes[e.a], g.nodes[e.b]
+            if e.id in st.diag_dir:
+                st.diag_dir[e.id] = s if nb.y > na.y else -s
+    # а наклон дальше задаётся единый: 10 мм по высоте на 15 мм по горизонтали
+    for n in g.nodes.values():
+        n.y = MARGIN + row_of[n.y] * CELL
+        n.x = snap(MARGIN + (n.x - x0) / u * CELL)      # на линии сетки (5 мм)
     st.u = CELL
     refresh(st)
     return y0, u
+
+
+def _find_center_named(st: Station):
+    """Ось станции после компоновки: середина общего участка путей станции,
+    получивших имена при анализе (кроме главных – они идут через всю схему)."""
+    mains = {id(l) for l in st.mains}
+    named = [l for l in st.lines if 'name' in l and id(l) not in mains]
+    if not named:
+        _find_center(st)
+        return
+    lo = max(l['x0'] for l in named)
+    hi = min(l['x1'] for l in named)
+    if lo < hi:
+        st.xc = (lo + hi) / 2
+    else:
+        mids = sorted((l['x0'] + l['x1']) / 2 for l in named)
+        st.xc = mids[len(mids) // 2]
 
 
 def refresh(st: Station):
@@ -94,7 +134,7 @@ def refresh(st: Station):
         l['nodes'].sort(key=lambda n: g.nodes[n].x)
     st.sw.clear()
     _switch_geometry(st)
-    _find_center(st)
+    _find_center_named(st)
     # имена путей привязаны к рёбрам, пересекающим ось; ось могла сместиться
     names = {}
     for l in st.lines:
@@ -172,9 +212,9 @@ def relax(st: Station) -> bool:
         na, nb = g.nodes[e.a], g.nodes[e.b]
         if abs(na.y - nb.y) < 1e-6:
             a, b = (e.a, e.b) if na.x <= nb.x else (e.b, e.a)
-            cons.append((a, b, math.ceil(_required(st, e) - 1e-6)))
+            cons.append((a, b, snap(_required(st, e), up=True)))
         else:
-            d = diag_dx(st, e)                  # строго 30° к горизонтали
+            d = diag_dx(st, e)                  # единый наклон 10:15
             cons.append((e.a, e.b, d))
             rev.append((e.b, e.a, -d))
     # на одной линии сетки несвязанные отрезки не должны наезжать друг на друга
@@ -186,7 +226,7 @@ def relax(st: Station) -> bool:
         ids.sort(key=lambda n: g.nodes[n].x)
         for a, b in zip(ids, ids[1:]):
             if frozenset((a, b)) not in linked:
-                cons.append((a, b, MIN_GAP))
+                cons.append((a, b, snap(MIN_GAP, up=True)))
     ok = _solve(x, cons + rev, len(x))
     st.slope_ok = ok
     if not ok:                                  # цикл (напр., перекрёстный съезд) –
@@ -194,21 +234,62 @@ def relax(st: Station) -> bool:
         _solve(x, cons, len(x))
     moved = max(abs(x[n] - g.nodes[n].x) for n in x) if x else 0
     for n in x:
-        g.nodes[n].x = round(x[n])              # все узлы – на линиях миллиметровки
+        g.nodes[n].x = snap(x[n])               # все узлы – на линиях сетки 5 мм
     if moved > 0.25:
         refresh(st)
     return moved > 0.25
 
 
-SLOPE = 1 / math.tan(math.radians(30))     # √3: горизонталь на 1 мм подъёма
+DIAG_RUN = 15.0      # мм по горизонтали на одно междупутье (10 мм по высоте)
+SLOPE = DIAG_RUN / CELL
+DIAG_ANGLE = math.degrees(math.atan2(CELL, DIAG_RUN))
 
 
 def diag_dx(st: Station, e) -> int:
-    """Горизонтальная проекция диагонали под 30°, округлённая до целого мм
-    (узлы – на линиях сетки): 1 междупутье (10 мм) -> 17 мм, 2 -> 35 мм, 3 -> 52 мм."""
+    """Горизонтальная проекция диагонали: на 10 мм по высоте – 15 мм по горизонтали
+    (1 междупутье -> 15 мм, 2 -> 30 мм, 3 -> 45 мм), узлы остаются на линиях сетки."""
     g = st.g
     dy = abs(g.nodes[e.b].y - g.nodes[e.a].y)
     return st.diag_dir.get(e.id, 1) * round(SLOPE * dy)
+
+
+def snap_joints(st: Station):
+    """Стыки на горизонтальных путях – на целые миллиметры (линии миллиметровки)."""
+    g = st.g
+    update_negab(st)
+    for j in st.joints:
+        e = g.edges[j.edge]
+        (ax, ay), (bx, by) = g.pos(e.a), g.pos(e.b)
+        if abs(ay - by) > 1e-6:
+            continue
+        L = g.length(e)
+        x0 = ax + (bx - ax) * j.t / L
+        was_negab, t_old = j.negab, j.t
+        # ближайшее целое, затем другое – если округление сделало стык негабаритным
+        for x in sorted({math.floor(x0), math.ceil(x0)}, key=lambda v: abs(v - x0)):
+            t = abs(x - ax)
+            if not 0.5 < t < L - 0.5:
+                continue
+            j.t = t
+            update_negab(st, [j])
+            if j.negab <= was_negab:
+                break
+        else:
+            j.t = t_old
+            update_negab(st, [j])
+    # стыки в конце стрелочной улицы – строго под стыком соседнего пути
+    for j in st.joints:
+        j2 = getattr(j, 'align_to', None)
+        if j2 is None:
+            continue
+        e = g.edges[j.edge]
+        ax, bx = g.nodes[e.a].x, g.nodes[e.b].x
+        x = g.point_on(g.edges[j2.edge], j2.t)[0]
+        L = g.length(e)
+        t = (x - ax) / (bx - ax) * L if bx != ax else j.t
+        if 0.5 < t < L - 0.5:
+            j.t = t
+    update_negab(st)
 
 
 def check_geometry(st: Station):
@@ -220,10 +301,10 @@ def check_geometry(st: Station):
         dy = abs(nb.y - na.y)
         if dy > 1e-6:
             ang = math.degrees(math.atan2(dy, abs(nb.x - na.x)))
-            if abs(ang - 30) > 1.0:
+            if abs(ang - DIAG_ANGLE) > 0.5:
                 bad_angle.append(round(ang, 1))
     for n in g.nodes.values():
-        if abs(n.x - round(n.x)) > 1e-6 or abs(n.y - round(n.y)) > 1e-6:
+        if abs(n.x % GRID_X) > 1e-6 or abs(n.y % CELL) > 1e-6:
             off_grid.append(n.id)
     return bad_angle, off_grid
 
