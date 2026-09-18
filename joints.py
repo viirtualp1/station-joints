@@ -439,6 +439,7 @@ def place_joints(st: Station):
                      why=f'участок {sig}П: от входного {sig} до стрелки {_nm(st, cur)}')
 
     # б – пути станции (центральные части путей, пересекающих ось)
+    b_at = {}                                   # узел на конце пути -> стык б
     for l in st.lines:
         e = _central_edge(st, l)
         if e is None or not (l['x0'] < st.xc < l['x1']):
@@ -447,7 +448,8 @@ def place_joints(st: Station):
         for n in (e.a, e.b):
             if g.degree(n) >= 2:
                 side = 'слева' if g.nodes[n].x < st.xc else 'справа'
-                _add(st, e.id, _t_gab(st, e, n), 'б', why=f'путь {nm}П ({side})')
+                b_at[n] = (e, _add(st, e.id, _t_gab(st, e, n), 'б', why=f'путь {nm}П ({side})'))
+    _align_ladder_ends(st, b_at)
 
     # з – стрелка, ведущая в предохранительный (короткий) тупик, – отдельный участок.
     # Приближённо: ответвление стрелки упирается в тупик длиной < 3 междупутий
@@ -541,6 +543,34 @@ def place_joints(st: Station):
     st.sections = compute_sections(st)
     name_sections(st)
     check_entries(st)
+
+
+def _align_ladder_ends(st: Station, b_at):
+    """Крайний путь стрелочной улицы, примыкающий к ней изломом (без стрелки),
+    получает стык б на той же ординате, что и соседний путь у последней стрелки
+    улицы, – стыки стоят друг под другом."""
+    g = st.g
+    for bend, (e, j) in b_at.items():
+        if g.degree(bend) != 2:
+            continue
+        diag = [f for f in g.incident(bend) if f.id != e.id][0]
+        chain = next((c for c in st.chains if diag.id in c['edges']), None)
+        if chain is None or not chain['switches']:
+            continue
+        # ближайшая к излому стрелка цепочки
+        idx = chain['nodes'].index(bend) if bend in chain['nodes'] else None
+        if idx is None:
+            continue
+        s = min(chain['switches'], key=lambda n: abs(chain['nodes'].index(n) - idx))
+        if s not in b_at:
+            continue
+        e2, j2 = b_at[s]
+        x_target = g.point_on(e2, j2.t)[0]
+        ax, bx = g.nodes[e.a].x, g.nodes[e.b].x
+        L = g.length(e)
+        t = (x_target - ax) / (bx - ax) * L if bx != ax else j.t
+        if 0.05 * L < t < 0.95 * L:
+            j.t = t
 
 
 def _walk_to_switch(st: Station, end):
