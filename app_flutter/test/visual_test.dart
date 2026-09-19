@@ -1,3 +1,4 @@
+import 'dart:async';
 // Визуальная проверка без экрана: полный интерфейс рисуется в памяти (flutter test),
 // с настоящим Python-бэкендом и системными шрифтами, снимки – в PNG.
 //
@@ -123,6 +124,19 @@ void main() {
       await t.pumpWidget(RepaintBoundary(key: _boundary, child: StationApp(initialPath: stj)));
       await _waitFor(t, find.textContaining('светофоров'));
       expect(find.textContaining('.stj'), findsWidgets);
+      // повторный запуск программы с другим файлом – открывается в этом окне
+      unawaited(t.binding.defaultBinaryMessenger.handlePlatformMessage(
+        'station_joints/instance',
+        const StandardMethodCodec().encodeMethodCall(MethodCall('open', _sample)),
+        (_) {},
+      ));
+      await _waitFor(t, find.text('var96_photo'));
+      unawaited(t.binding.defaultBinaryMessenger.handlePlatformMessage(
+        'station_joints/instance',
+        const StandardMethodCodec().encodeMethodCall(MethodCall('open', stj)),
+        (_) {},
+      ));
+      await _waitFor(t, find.textContaining('.stj'));
       await t.runAsync(() => Future.delayed(const Duration(seconds: 2))); // миниатюра
       await _shot(t, '7_project');
       await t.pumpWidget(const SizedBox());

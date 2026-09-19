@@ -75,6 +75,8 @@ class _HomeState extends State<Home> {
   Timer? _autosaveTimer;
   late final AppLifecycleListener _life;
   Release? _update; // найденная новая версия
+  String? _pendingOpen; // файл от повторного запуска, пришедший до готовности движка
+  static const _instance = MethodChannel('station_joints/instance');
 
   @override
   void initState() {
@@ -83,7 +85,29 @@ class _HomeState extends State<Home> {
     // закрытие окна: спросить про несохранённые правки
     _life = AppLifecycleListener(onExitRequested: _onExitRequested);
     _autosaveTimer = Timer.periodic(const Duration(seconds: 30), (_) => _autosave());
+    // повторный запуск программы (двойной щелчок по .stj) – открыть файл здесь
+    _instance.setMethodCallHandler((call) async {
+      if (call.method == 'open' && call.arguments is String) await _openExternal(call.arguments as String);
+    });
     _start();
+  }
+
+  Future<void> _openExternal(String path) async {
+    if (path.isEmpty) return;
+    if (!_ready || _busy) {
+      _pendingOpen = path;
+      return;
+    }
+    if (_path != null && _path!.toLowerCase() == path.toLowerCase()) {
+      _say('Этот файл уже открыт');
+      return;
+    }
+    if (!File(path).existsSync()) {
+      _say('Файл не найден: $path', error: true);
+      return;
+    }
+    if (!await _confirmDiscard()) return;
+    await _load(path);
   }
 
   Future<void> _start() async {
@@ -94,6 +118,9 @@ class _HomeState extends State<Home> {
       final restored = await _offerRestore();
       final p = widget.initialPath;
       if (!restored && p != null && File(p).existsSync()) await _load(p);
+      final pending = _pendingOpen;
+      _pendingOpen = null;
+      if (pending != null) await _openExternal(pending);
     } catch (e) {
       setState(() => _fatal = '$e\n\n${_backend.stderrTail}');
     }
@@ -103,6 +130,7 @@ class _HomeState extends State<Home> {
   @override
   void dispose() {
     _life.dispose();
+    _instance.setMethodCallHandler(null);
     _autosaveTimer?.cancel();
     _backend.dispose();
     _toastTimer?.cancel();

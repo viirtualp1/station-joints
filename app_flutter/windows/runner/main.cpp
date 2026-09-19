@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "flutter_window.h"
+#include "single_instance.h"
 #include "utils.h"
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
@@ -11,6 +12,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
     CreateAndAttachConsole();
+  }
+
+  // Программа уже открыта – передать ей файл и выйти (одна копия).
+  if (ForwardToRunningInstance(FirstArgument())) {
+    return EXIT_SUCCESS;
   }
 
   // Initialize COM, so that it is available for use in the library and/or
@@ -31,6 +37,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
+  // метка, по которой следующий запуск найдёт это окно
+  ::SetPropW(window.GetHandle(), kMainWindowProp, reinterpret_cast<HANDLE>(1));
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {
