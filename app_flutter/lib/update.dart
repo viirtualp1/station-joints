@@ -10,7 +10,7 @@ const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: 'dev');
 
 /// Публичный репозиторий, в Releases которого выкладываются установщики.
 /// Исходники при этом могут жить в приватном репозитории.
-const updateRepo = 'viirtualp1/station-joints-releases';
+const updateRepo = 'viirtualp1/station-joints';
 
 class Release {
   final String version, page, notes;
