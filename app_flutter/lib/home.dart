@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
-import 'package:flutter/gestures.dart' show kMiddleMouseButton;
+import 'package:flutter/gestures.dart' show kMiddleMouseButton, kSecondaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -42,6 +42,7 @@ class _Doc {
   String? path; // открытый файл: картинка или .stj
   bool dirty = false; // есть несохранённые изменения
   Hit? selected;
+  String? name; // имя, заданное пользователем (для ещё не сохранённой схемы)
   bool layersStale = false; // слои меняли, пока таб был неактивен
   final cam = SchemeController();
   _Doc(this.id);
@@ -59,6 +60,7 @@ class _HomeState extends State<Home> {
   final _docs = <_Doc>[];
   _Doc? _doc; // активный таб
   final _noCam = SchemeController(); // холст без схемы
+  _Doc? _renaming; // таб, имя которого сейчас редактируется
 
   Scene? get _scene => _doc?.scene;
   String? get _path => _doc?.path;
@@ -199,6 +201,99 @@ class _HomeState extends State<Home> {
     await _dropDoc(d);
   }
 
+  // ------------------------------------------------------------------ переименование
+  Future<void> _startRename(_Doc d) async {
+    if (_busy || d.scene == null) return;
+    await _activate(d);
+    setState(() => _renaming = d);
+  }
+
+  void _endRename() {
+    setState(() => _renaming = null);
+    _focus.requestFocus(); // вернуть горячие клавиши
+  }
+
+  /// Новое имя таба. Несохранённая схема – имя для будущего сохранения;
+  /// сохранённая работа – файл .stj переименовывается на диске.
+  Future<void> _commitRename(_Doc d, String raw) async {
+    if (!identical(_renaming, d)) return;
+    _endRename();
+    var name = raw.trim().replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_');
+    if (name.toLowerCase().endsWith('.stj')) name = name.substring(0, name.length - 4).trim();
+    if (name.isEmpty || name == _baseOf(d)) return;
+    final project = d.scene?.source?['project'] as String?;
+    if (project == null) {
+      setState(() => d.name = name);
+      _say('Имя «$name» – будет предложено при сохранении (Ctrl+S)');
+      return;
+    }
+    final sep = Platform.pathSeparator;
+    final dir = project.substring(0, project.lastIndexOf(sep));
+    final target = '$dir$sep$name.stj';
+    if (target.toLowerCase() != project.toLowerCase() && File(target).existsSync()) {
+      _say('Файл «$name.stj» уже есть в этой папке', error: true);
+      return;
+    }
+    try {
+      File(project).renameSync(target);
+      final r = await _call('set_project', {'path': target}, d);
+      setState(() {
+        d.scene!.source = (r['source'] as Map).cast<String, dynamic>();
+        d.path = target;
+        d.name = null;
+        _recent = Recent.remove(project);
+      });
+      await _remember(target, project: true, doc: d);
+      _say('Переименовано: $name.stj');
+    } catch (e) {
+      _say('Не удалось переименовать: $e', error: true);
+    }
+  }
+
+  Future<void> _tabMenu(_Doc d, Offset global) async {
+    final t = Tok.of(context);
+    PopupMenuItem<String> item(String v, String text, String key, {bool enabled = true}) => PopupMenuItem(
+      value: v,
+      height: 32,
+      enabled: enabled,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Expanded(
+            child: Text(text, style: TextStyle(fontSize: 13, color: enabled ? t.text : t.muted)),
+          ),
+          Text(
+            key,
+            style: TextStyle(fontSize: 11, fontFamily: mono, color: t.muted),
+          ),
+        ],
+      ),
+    );
+    final v = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(global.dx, global.dy, global.dx, global.dy),
+      shape: RoundedRectangleBorder(side: BorderSide(color: t.line)),
+      color: t.panel,
+      items: [
+        item('rename', 'Переименовать', 'F2', enabled: d.scene != null),
+        item('close', 'Закрыть', 'Ctrl+W'),
+        item('others', 'Закрыть остальные', '', enabled: _docs.length > 1),
+      ],
+    );
+    switch (v) {
+      case 'rename':
+        await _startRename(d);
+      case 'close':
+        await _closeTab(d);
+      case 'others':
+        for (final o in List.of(_docs)) {
+          if (!identical(o, d)) await _closeTab(o);
+        }
+        await _activate(d);
+    }
+  }
+
   /// Спросить про все табы с несохранёнными правками (выход, обновление).
   Future<bool> _confirmAll() async {
     for (final d in List.of(_docs)) {
@@ -210,6 +305,7 @@ class _HomeState extends State<Home> {
   }
 
   String _baseOf(_Doc? d) {
+    if (d?.name != null) return d!.name!;
     final src = d?.scene?.source;
     final n =
         (src?['project'] as String?)?.split(Platform.pathSeparator).last ??
@@ -712,10 +808,13 @@ class _HomeState extends State<Home> {
   // ------------------------------------------------------------------ клавиши
   KeyEventResult _onKey(FocusNode n, KeyEvent e) {
     if (e is! KeyDownEvent) return KeyEventResult.ignored;
+    if (_renaming != null) return KeyEventResult.ignored; // печатают имя таба
     final ctrl = HardwareKeyboard.instance.isControlPressed;
     final shift = HardwareKeyboard.instance.isShiftPressed;
     final k = e.logicalKey;
-    if (ctrl && k == LogicalKeyboardKey.tab) {
+    if (k == LogicalKeyboardKey.f2) {
+      if (_doc != null) _startRename(_doc!);
+    } else if (ctrl && k == LogicalKeyboardKey.tab) {
       _cycleTab(shift ? -1 : 1);
     } else if (ctrl && k == LogicalKeyboardKey.keyW) {
       if (_doc != null) _closeTab(_doc!);
@@ -897,8 +996,14 @@ class _HomeState extends State<Home> {
                       active: identical(d, _doc),
                       dirty: d.dirty,
                       loading: d.scene == null,
+                      editing: identical(d, _renaming),
+                      editText: _baseOf(d),
                       onTap: () => _activate(d),
                       onClose: () => _closeTab(d),
+                      onDoubleTap: () => _startRename(d),
+                      onMenu: (p) => _tabMenu(d, p),
+                      onRename: (v) => _commitRename(d, v),
+                      onCancelRename: _endRename,
                     ),
                 ],
               ),
@@ -911,6 +1016,7 @@ class _HomeState extends State<Home> {
   }
 
   String _tabTitle(_Doc d) {
+    if (d.name != null) return d.name!;
     final src = d.scene?.source;
     if (src?['project'] != null) return '${_baseOf(d)}.stj';
     return (src?['name'] as String?) ?? d.path?.split(Platform.pathSeparator).last ?? 'схема';
@@ -2069,9 +2175,11 @@ class _RecentCard extends StatelessWidget {
 }
 
 class _DocTab extends StatefulWidget {
-  final String title, tooltip;
-  final bool project, active, dirty, loading;
-  final VoidCallback onTap, onClose;
+  final String title, tooltip, editText;
+  final bool project, active, dirty, loading, editing;
+  final VoidCallback onTap, onClose, onDoubleTap, onCancelRename;
+  final void Function(Offset global) onMenu;
+  final void Function(String) onRename;
   const _DocTab({
     required this.title,
     required this.tooltip,
@@ -2079,8 +2187,14 @@ class _DocTab extends StatefulWidget {
     required this.active,
     required this.dirty,
     required this.loading,
+    required this.editing,
+    required this.editText,
     required this.onTap,
     required this.onClose,
+    required this.onDoubleTap,
+    required this.onMenu,
+    required this.onRename,
+    required this.onCancelRename,
   });
 
   @override
@@ -2089,6 +2203,14 @@ class _DocTab extends StatefulWidget {
 
 class _DocTabState extends State<_DocTab> {
   bool _hover = false;
+  DateTime? _lastTap; // двойной клик – без задержки обычного клика
+
+  void _tap() {
+    final now = DateTime.now();
+    final dbl = _lastTap != null && now.difference(_lastTap!) < const Duration(milliseconds: 400);
+    _lastTap = dbl ? null : now;
+    dbl ? widget.onDoubleTap() : widget.onTap();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2103,12 +2225,13 @@ class _DocTabState extends State<_DocTab> {
         // средняя кнопка мыши – закрыть
         onPointerDown: (e) {
           if (e.buttons == kMiddleMouseButton) w.onClose();
+          if (e.buttons == kSecondaryMouseButton) w.onMenu(e.position);
         },
         child: Tooltip(
           message: w.tooltip,
           waitDuration: const Duration(milliseconds: 700),
           child: InkWell(
-            onTap: w.onTap,
+            onTap: _tap,
             hoverColor: Colors.transparent,
             child: Container(
               height: 32,
@@ -2131,15 +2254,17 @@ class _DocTabState extends State<_DocTab> {
                   ),
                   const SizedBox(width: 6),
                   Flexible(
-                    child: Text(
-                      w.title,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        color: w.active ? t.text : t.muted,
-                        fontStyle: w.loading ? FontStyle.italic : FontStyle.normal,
-                      ),
-                    ),
+                    child: w.editing
+                        ? _TabNameField(text: w.editText, onSubmit: w.onRename, onCancel: w.onCancelRename)
+                        : Text(
+                            w.title,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: w.active ? t.text : t.muted,
+                              fontStyle: w.loading ? FontStyle.italic : FontStyle.normal,
+                            ),
+                          ),
                   ),
                   const SizedBox(width: 4),
                   SizedBox(
@@ -2166,6 +2291,79 @@ class _DocTabState extends State<_DocTab> {
                   ),
                 ],
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Поле имени прямо в табе: Enter – сохранить, Esc – отмена, клик мимо – сохранить.
+class _TabNameField extends StatefulWidget {
+  final String text;
+  final void Function(String) onSubmit;
+  final VoidCallback onCancel;
+  const _TabNameField({required this.text, required this.onSubmit, required this.onCancel});
+
+  @override
+  State<_TabNameField> createState() => _TabNameFieldState();
+}
+
+class _TabNameFieldState extends State<_TabNameField> {
+  late final _ctl = TextEditingController(text: widget.text)
+    ..selection = TextSelection(baseOffset: 0, extentOffset: widget.text.length);
+  final _node = FocusNode();
+  bool _done = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _node.addListener(() {
+      if (!_node.hasFocus) _finish(true);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _node.requestFocus());
+  }
+
+  void _finish(bool save) {
+    if (_done) return;
+    _done = true;
+    save ? widget.onSubmit(_ctl.text) : widget.onCancel();
+  }
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    _node.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Tok.of(context);
+    return SizedBox(
+      width: 150,
+      height: 22,
+      child: CallbackShortcuts(
+        bindings: {const SingleActivator(LogicalKeyboardKey.escape): () => _finish(false)},
+        child: TextField(
+          controller: _ctl,
+          focusNode: _node,
+          onSubmitted: (_) => _finish(true),
+          style: TextStyle(fontSize: 12.5, color: t.text),
+          cursorWidth: 1.2,
+          decoration: InputDecoration(
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+            filled: true,
+            fillColor: t.bg,
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.zero,
+              borderSide: BorderSide(color: t.accent),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.zero,
+              borderSide: BorderSide(color: t.accent),
             ),
           ),
         ),

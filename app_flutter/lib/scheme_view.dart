@@ -481,11 +481,32 @@ class _Painter extends CustomPainter {
 
   Offset S(Offset m) => m * k + o;
 
+  /// Тёмная тема: «умная» инверсия чертежа – яркость наоборот, оттенок тот же
+  /// (как CSS invert(1) hue-rotate(180deg)): чёрные линии – белые, лист – тёмный,
+  /// красные/синие/зелёные элементы остаются красными/синими/зелёными.
+  static const _smartInvert = ColorFilter.matrix(<double>[
+    0.574, -1.430, -0.144, 0, 255, //
+    -0.426, -0.430, -0.144, 0, 255, //
+    -0.426, -1.430, 0.856, 0, 255, //
+    0, 0, 0, 1, 0,
+  ]);
+
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = tok.paper);
+    final dark = identical(tok, Tok.dark);
+    if (dark) canvas.saveLayer(Offset.zero & size, Paint()..colorFilter = _smartInvert);
+    // в тёмной теме серый #E3E3E1 после инверсии – #1C1C1E
+    canvas.drawRect(Offset.zero & size, Paint()..color = dark ? const Color(0xFFE3E3E1) : tok.paper);
     final s = scene;
+    if (s != null) _drawSheet(canvas, size, s);
+    if (dark) canvas.restore();
     if (s == null) return;
+    _mark(canvas, hover, hovered: true);
+    _mark(canvas, selected, hovered: false);
+  }
+
+  /// Лист: миллиметровка, надписи с картинки, чертёж, линия склейки листов.
+  void _drawSheet(Canvas canvas, Size size, Scene s) {
     if (grid) _grid(canvas, size);
 
     canvas.save();
@@ -514,9 +535,6 @@ class _Painter extends CustomPainter {
         canvas.drawLine(Offset(x, y), Offset(x, y + 7), p);
       }
     }
-
-    _mark(canvas, hover, hovered: true);
-    _mark(canvas, selected, hovered: false);
   }
 
   void _mark(Canvas canvas, Hit? h, {required bool hovered}) {

@@ -40,7 +40,7 @@ class Tok {
     accent: Color(0xFF6D9BE0),
     accentSoft: Color(0x336D9BE0),
     danger: Color(0xFFE5736B),
-    paper: Color(0xFFFBFBFA), // лист остаётся бумажным и в тёмной теме
+    paper: Color(0xFFFBFBFA), // превью исходника; сам чертёж в тёмной теме инвертируется
   );
 
   static Tok of(BuildContext c) => Theme.of(c).brightness == Brightness.dark ? dark : light;

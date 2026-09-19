@@ -5,7 +5,8 @@
 
 Служебные: ping, sample, new_doc, close_doc. Команды документа (параметр doc – номер
 таба из new_doc): load, restore, relayout, scene, recompute, add_joint, remove_joint,
-toggle_negab, undo, redo, save_project, thumb, export_png, export_pdf, export_docx.
+toggle_negab, undo, redo, save_project, set_project, thumb, export_png, export_pdf,
+export_docx.
 Команды, меняющие схему, возвращают новую сцену (см. scene.py)."""
 from __future__ import annotations
 
@@ -279,6 +280,12 @@ class Session:
             self.path = self.project = path
         return {'source': self._source()}
 
+    def set_project(self, path: str):
+        """Файл работы переименован (интерфейсом) – дальше сохранять в path."""
+        self._need()
+        self.path = self.project = path
+        return {'source': self._source()}
+
     def thumb(self, path: str):
         """Миниатюра схемы для списка недавних."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -315,7 +322,7 @@ DOC_COMMANDS = {'load': 'load', 'relayout': 'relayout', 'scene': 'scene_cmd',
                 'recompute': 'recompute', 'add_joint': 'add_joint',
                 'remove_joint': 'remove_joint', 'toggle_negab': 'toggle_negab',
                 'undo': 'undo', 'redo': 'redo', 'restore': 'restore',
-                'save_project': 'save_project', 'thumb': 'thumb', 'export_png': 'export_png',
+                'save_project': 'save_project', 'set_project': 'set_project', 'thumb': 'thumb', 'export_png': 'export_png',
                 'export_pdf': 'export_pdf', 'export_docx': 'export_docx'}
 
 

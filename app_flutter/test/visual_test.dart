@@ -111,6 +111,15 @@ void main() {
     await t.tapAt(const Offset(700, 450));
     await t.pump(const Duration(milliseconds: 300));
 
+    // переименование несохранённой схемы: F2 -> имя -> Enter
+    await t.sendKeyEvent(LogicalKeyboardKey.f2);
+    await t.pump(const Duration(milliseconds: 100));
+    await t.enterText(find.byType(TextField), 'Станция А');
+    await t.testTextInput.receiveAction(TextInputAction.done);
+    await t.pump(const Duration(milliseconds: 200));
+    expect(find.text('Станция А'), findsWidgets);
+    await _shot(t, '4b_renamed');
+
     // выход: гасим бэкенд
     await t.pumpWidget(const SizedBox());
     await t.runAsync(() => Future.delayed(const Duration(milliseconds: 300)));
@@ -121,6 +130,21 @@ void main() {
     t.view.devicePixelRatio = 1;
     addTearDown(t.view.reset);
     if (stj.isNotEmpty) {
+      final dir = Directory.systemTemp.createTempSync('sj_rename');
+      final copy = '${dir.path}${Platform.pathSeparator}var91.stj';
+      File(stj).copySync(copy);
+      await t.pumpWidget(RepaintBoundary(key: _boundary, child: StationApp(initialPath: copy)));
+      await _waitFor(t, find.textContaining('светофоров'));
+      await t.sendKeyEvent(LogicalKeyboardKey.f2);
+      await t.pump(const Duration(milliseconds: 100));
+      await t.enterText(find.byType(TextField), 'var91 финал');
+      await t.testTextInput.receiveAction(TextInputAction.done);
+      await _waitFor(t, find.textContaining('Переименовано'));
+      expect(File('${dir.path}${Platform.pathSeparator}var91 финал.stj').existsSync(), isTrue);
+      expect(File(copy).existsSync(), isFalse);
+      await t.pumpWidget(const SizedBox());
+      await t.runAsync(() => Future.delayed(const Duration(milliseconds: 300)));
+
       await t.pumpWidget(RepaintBoundary(key: _boundary, child: StationApp(initialPath: stj)));
       await _waitFor(t, find.textContaining('светофоров'));
       expect(find.textContaining('.stj'), findsWidgets);
