@@ -857,11 +857,25 @@ class _HomeState extends State<Home> {
     return KeyEventResult.handled;
   }
 
+  // ------------------------------------------------------------------ заголовок окна
+  String? _title;
+
+  /// «файл – Стыки X.Y.Z»: версия видна сразу (та же, что сверяется с релизами).
+  void _syncTitle() {
+    final app = 'Стыки $appVersion';
+    final d = _doc;
+    final title = d == null ? app : '${d.dirty ? '● ' : ''}${_tabTitle(d)} — $app';
+    if (title == _title) return;
+    _title = title;
+    _instance.invokeMethod('setTitle', title).catchError((_) => null); // в тестах окна нет
+  }
+
   // ------------------------------------------------------------------ разметка
   @override
   Widget build(BuildContext context) {
     final t = Tok.of(context);
     if (_fatal != null) return _FatalScreen(text: _fatal!);
+    _syncTitle();
     return Focus(
       focusNode: _focus,
       autofocus: true,

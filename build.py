@@ -97,6 +97,11 @@ def build_flutter():
     ver = app_version()
     run(flutter_cmd(), 'build', 'windows', '--release', f'--dart-define=APP_VERSION={ver}', cwd=APP)
     rel = os.path.join(APP, 'build', 'windows', 'x64', 'runner', 'Release')
+    # версия, зашитая в программу, должна совпасть с версией установщика – иначе
+    # установленная программа будет вечно предлагать обновиться до «своего» релиза
+    with open(os.path.join(rel, 'data', 'app.so'), 'rb') as f:
+        if f'StationJoints/{ver}'.encode() not in f.read():
+            sys.exit(f'В собранной программе не версия {ver} – удалите app_flutter/build и соберите заново')
     # 3) сборка вместе: интерфейс + backend/
     out = os.path.join(ROOT, 'dist', 'StationJoints')
     shutil.rmtree(out, ignore_errors=True)

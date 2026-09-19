@@ -1,6 +1,7 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <string>
 
 #include <flutter/standard_method_codec.h>
 
@@ -32,6 +33,21 @@ bool FlutterWindow::OnCreate() {
   instance_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       flutter_controller_->engine()->messenger(), "station_joints/instance",
       &flutter::StandardMethodCodec::GetInstance());
+  // Dart задаёт заголовок окна: «файл – Стыки X.Y.Z» (версия – та же, что для обновлений)
+  instance_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        const auto* title = std::get_if<std::string>(call.arguments());
+        if (call.method_name() == "setTitle" && title != nullptr) {
+          int n = ::MultiByteToWideChar(CP_UTF8, 0, title->c_str(), -1, nullptr, 0);
+          std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+          if (n > 1) ::MultiByteToWideChar(CP_UTF8, 0, title->c_str(), -1, w.data(), n);
+          ::SetWindowTextW(GetHandle(), w.c_str());
+          result->Success();
+          return;
+        }
+        result->NotImplemented();
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
