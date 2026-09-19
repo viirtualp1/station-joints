@@ -34,6 +34,12 @@ RULE_TEXT = {
 }
 
 
+# Направление нечётного движения. По пособию (рис. 2.17, прил. 3) нечётная горловина
+# слева; по требованию преподавателя по умолчанию – справа: нечётные поезда идут
+# справа налево, чётные – слева направо.
+ODD_RIGHT = True
+
+
 @dataclass
 class Station:
     g: Graph
@@ -58,6 +64,11 @@ class Station:
     pending_anchor: object = None                   # привязка, вычисленная _t_near/_t_between
     entry_check: list = field(default_factory=list)  # (сигнал, ok, первая стрелка)
     sheet_cut: float | None = None                  # ордината стыка двух листов
+    odd_right: bool = ODD_RIGHT                     # нечётная горловина справа
+
+    def odd_side(self, x: float) -> bool:
+        """Лежит ли точка с абсциссой x в нечётной горловине."""
+        return (x > self.xc) if self.odd_right else (x < self.xc)
 
 
 # --------------------------------------------------------------------------
@@ -72,8 +83,8 @@ def _dev_straight(g, e1, e2, n):
     return d
 
 
-def analyse(g: Graph) -> Station:
-    st = Station(g)
+def analyse(g: Graph, odd_right: bool | None = None) -> Station:
+    st = Station(g, odd_right=ODD_RIGHT if odd_right is None else odd_right)
     _classify_ends(st)
     _build_lines(st)
     _switch_geometry(st)
@@ -89,7 +100,7 @@ def analyse(g: Graph) -> Station:
 
 def _number_tupiks(st: Station):
     """П. 2.2: тупики в нечётной горловине – нечётные номера, в чётной – чётные,
-    с буквой Т (1Т, 3Т… слева; 2Т, 4Т… справа); по порядку от края станции, сверху вниз."""
+    с буквой Т (1Т, 3Т… и 2Т, 4Т…); по порядку от края станции, сверху вниз."""
     g = st.g
     x0, _, x1, _ = g.bbox()
     ends = [n for n in g.nodes.values() if g.degree(n.id) == 1 and n.mark == 'tupik']
@@ -97,11 +108,12 @@ def _number_tupiks(st: Station):
     for n in ends:
         _, cur = _walk_to_switch(st, n.id)
         num = g.nodes[cur].number if cur else None
-        throat[n.id] = (int(num) % 2 == 1) if num else (n.x < st.xc)
-    for left in (True, False):
-        side = [n for n in ends if throat[n.id] == left]
+        throat[n.id] = (int(num) % 2 == 1) if num else st.odd_side(n.x)
+    for odd in (True, False):
+        left = odd != st.odd_right
+        side = [n for n in ends if throat[n.id] == odd]
         side.sort(key=lambda n: (round((n.x - x0) if left else (x1 - n.x)), n.y))
-        num = 1 if left else 2
+        num = 1 if odd else 2
         for n in side:
             n.label = f'{num}Т'
             num += 2
@@ -328,18 +340,20 @@ def _name_tracks(st: Station):
                 st.track_names[e.id] = names[id(l)]
                 l['central'] = e.id
             l['name'] = names[id(l)]
-    # входные светофоры: слева нечётная горловина (Н), справа чётная (Ч)
+    # входные светофоры: в нечётной горловине – Н (НД), в чётной – Ч (ЧД)
     for l in st.mains:
         nm = l.get('name')
-        left, right = l['nodes'][0], l['nodes'][-1]
+        odd, even = l['nodes'][0], l['nodes'][-1]
+        if st.odd_right:
+            odd, even = even, odd
         if nm == 'I':
-            st.entry_names[left], st.entry_names[right] = 'Н', 'ЧД'
+            st.entry_names[odd], st.entry_names[even] = 'Н', 'ЧД'
         elif nm == 'II':
-            st.entry_names[left], st.entry_names[right] = 'НД', 'Ч'
+            st.entry_names[odd], st.entry_names[even] = 'НД', 'Ч'
 
 
 def _number_switches(st: Station):
-    """П. 2.3: нечётная горловина (слева) – 1, 3, 5…, чётная (справа) – 2, 4, 6…
+    """П. 2.3: нечётная горловина – 1, 3, 5…, чётная – 2, 4, 6…
     Нумерация от входного светофора по ординатам; при одной ординате меньший
     номер у верхней; стрелки съездов и стрелочных улиц – подряд."""
     g = st.g
@@ -357,7 +371,7 @@ def _number_switches(st: Station):
             return (round(dist(s) / tol), g.nodes[s].y)
 
         sws.sort(key=key)
-        num = 1 if left else 2
+        num = 2 if left == st.odd_right else 1
         for s in sws:
             if g.nodes[s].number:
                 continue
@@ -385,7 +399,7 @@ def _add(st: Station, edge, t, rule, negab=None, why=''):
     for j in st.joints:
         if j.edge == edge and abs(j.t - t) < st.u * 0.2:
             return j
-    j = Joint(edge, t, rule, bool(negab), fixed=negab is not None, anchor=anchor)
+    j = Joint(edge, t, rule, bool(negab), fixed=negab is not None, anchor=anchor, why=why)
     st.joints.append(j)
     if why:
         st.log.append(f'  [{rule}] {why}')

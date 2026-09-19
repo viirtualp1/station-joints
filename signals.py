@@ -4,7 +4,7 @@
              огни Ж–З–К–Ж + лунно-белый пригласительный (прил. 1, «входной мачтовый»).
   Выходные – с каждого пути станции с обоих концов (пути обезличены), у стыка «б».
              Название: Н/Ч по направлению отправления + номер пути (Н1, Ч3, Н6…):
-             из чётной горловины (справа) отправляются нечётные – Н, из нечётной – Ч.
+             из чётной горловины отправляются нечётные – Н, из нечётной – Ч.
              С главных путей – мачтовые: Б–К–Ж–З–Ж (от мачты), остальные – карликовые
              в два ряда: К–Б / Ж–З–заглушка. Маневровые с путей совмещены с выходными (а).
   Маневровые (М1, М3… в нечётной горловине, М2, М4… в чётной, номера растут к оси):
@@ -83,7 +83,7 @@ def place_signals(st: Station):
                   and isinstance(j.anchor, tuple) and j.anchor[0] == n]
             if not jb:
                 continue
-            letter = 'Н' if g.nodes[n].x > st.xc else 'Ч'
+            letter = 'Ч' if st.odd_side(g.nodes[n].x) else 'Н'
             add(jb[0], n, name=f'{letter}{num}',
                 kind='exit_mast' if id(l) in mains else 'exit_dwarf',
                 why=f'выходной с пути {l["name"]}П')
@@ -131,13 +131,13 @@ def place_signals(st: Station):
         boxes.append(b)
     sigs = [s for s in sigs if s in kept]
 
-    # нумерация маневровых: нечётная горловина слева – М1, М3…, чётная справа – М2, М4…,
+    # нумерация маневровых: нечётная горловина – М1, М3…, чётная – М2, М4…,
     # номера возрастают по мере приближения к оси станции
     man = [s for s in sigs if s.kind.startswith('man')]
-    for left in (True, False):
-        side = [s for s in man if (_pos(st, s.joint)[0] < st.xc) == left]
+    for odd in (True, False):
+        side = [s for s in man if st.odd_side(_pos(st, s.joint)[0]) == odd]
         side.sort(key=lambda s: -abs(_pos(st, s.joint)[0] - st.xc))
-        num = 1 if left else 2
+        num = 1 if odd else 2
         for s in side:
             s.name = f'М{num}'
             num += 2

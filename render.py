@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import colorsys
 import math
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -253,7 +254,8 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
     k, ox, oy = view
 
     img = Image.new('RGB', (1, 1) if record is not None else (W * ss, H * ss), 'white')
-    d = record if record is not None else ImageDraw.Draw(img)
+    # PIL-холст или запись векторных примитивов (толщины – дробные мм)
+    d: Any = record if record is not None else ImageDraw.Draw(img)
     mm = st.u / 10.0 * k * ss               # экранных пикселей в 1 мм
 
     def S(x, y):

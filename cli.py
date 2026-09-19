@@ -1,6 +1,7 @@
 """Без GUI: python cli.py схема.jpg результат.png [--sections] [--names] [--grid] [--letters]
-                                                  [--sheets листы.pdf]
---sheets – дополнительно PDF из двух листов в натуральную величину (разрез у оси станции)."""
+                                                  [--sheets листы.pdf] [--odd-left]
+--sheets – дополнительно PDF из двух листов в натуральную величину (разрез у оси станции);
+--odd-left – нечётная горловина слева, как в пособии (по умолчанию – справа)."""
 import sys
 
 from joints import report
@@ -13,7 +14,8 @@ from sheets import make_sheets, save_pdf
 def main():
     src, out = sys.argv[1], sys.argv[2]
     r = parse_image(src)
-    st, annots = build_station(r['graph'], r['annots'])
+    st, annots = build_station(r['graph'], r['annots'],
+                                odd_right='--odd-left' not in sys.argv)
     img, _ = render(st, (2000, 1000), annots=annots,
                     show_sections='--sections' in sys.argv,
                     show_section_names='--names' in sys.argv,

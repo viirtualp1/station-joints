@@ -102,7 +102,7 @@ class App(ctk.CTk):
         self.layers = {k: tk.BooleanVar(value=v) for k, v in dict(
             grid=True, joints=True, signals=True, numbers=True, letters=False,
             sections=False, section_names=False, annots=True).items()}
-        self.two_sheets = tk.BooleanVar(value=True)     # горловины на двух листах
+        self.two_sheets = tk.BooleanVar(value=False)    # горловины на двух листах
         self.sheet_fmt = tk.StringVar(value='A3')
 
         self._build()

@@ -31,6 +31,7 @@ class Joint:
     fixed: bool = False          # габаритность задана правилом/вручную, не пересчитывать
     anchor: object = None        # (узел, желаемое расстояние) | ('between', da, db) | None
     align_to: 'Joint | None' = None  # держать ту же ординату, что у этого стыка
+    why: str = ''                # обоснование (для ведомости)
 
 
 @dataclass

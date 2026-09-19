@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import cv2
 import numpy as np
@@ -543,7 +544,7 @@ def drop_switchless(g: Graph):
 
 
 # --------------------------------------------------------------------------
-def parse_image(path: str):
+def parse_image(path: str) -> dict[str, Any]:
     gray0 = load_gray(path)
     gray, binimg, scale = binarize(gray0)
     gray, binimg, ang = deskew(gray, binimg)

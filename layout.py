@@ -19,7 +19,7 @@ import math
 from graph import Annotation
 from signals import place_signals
 from joints import (Station, _central_edge, _find_center, _switch_geometry, analyse,
-                    place_joints, update_negab)
+                    check_entries, compute_sections, name_sections, place_joints, update_negab)
 
 CELL = 10.0          # мм – междупутье
 MIN_EDGE = 5.0       # мин. длина любого горизонтального отрезка между узлами
@@ -41,9 +41,10 @@ def snap(v: float, up=False) -> int:
 MARGIN = 20.0        # поля листа слева/сверху
 
 
-def build_station(graph, annots=(), sheet_fmt: str | None = None):
+def build_station(graph, annots=(), sheet_fmt: str | None = None,
+                  odd_right: bool | None = None):
     """analyse -> перенос на сетку -> раздвижка по нормам -> расстановка стыков."""
-    st = analyse(graph)
+    st = analyse(graph, odd_right)
     orig = {n.id: (n.x, n.y) for n in graph.nodes.values()}
     y0, u0 = to_grid(st)
     for _ in range(8):
@@ -83,8 +84,8 @@ def _cut_candidates(st: Station):
 
 
 def spread_to_sheets(st: Station, fmt: str) -> bool:
-    """Растянуть пути парка по оси станции так, чтобы нечётная горловина заполнила
-    лист 1, чётная – лист 2 выбранного формата. Возвращает True, если растянули."""
+    """Растянуть пути парка по оси станции так, чтобы левая горловина заполнила
+    лист 1, правая – лист 2 выбранного формата. Возвращает True, если растянули."""
     from sheets import OVERLAP, _bounds, usable_width   # поздний импорт: sheets -> render
     g = st.g
     cands = _cut_candidates(st)
@@ -347,6 +348,10 @@ def snap_joints(st: Station):
         if 0.5 < t < L - 0.5:
             j.t = t
     update_negab(st)
+    # участки – по окончательным положениям стыков
+    st.sections = compute_sections(st)
+    name_sections(st)
+    check_entries(st)
 
 
 def check_geometry(st: Station):

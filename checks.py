@@ -50,7 +50,7 @@ def audit(st: Station) -> list[tuple[bool, str, str]]:
 
     # 2.3 нумерация стрелок
     bad = [_nm(st, s) for s in st.sw if g.nodes[s].number and
-           (_num(st, s) % 2 == 1) != (g.nodes[s].x < st.xc)]
+           (_num(st, s) % 2 == 1) != st.odd_side(g.nodes[s].x)]
     nums = [g.nodes[s].number or '' for s in st.sw]
     dup = {n for n in nums if nums.count(n) > 1}
     check(not bad and not dup and all(nums),
@@ -123,13 +123,13 @@ def audit(st: Station) -> list[tuple[bool, str, str]]:
     check(not bad, '2.5 мачтовые выходные – только с главных путей', ', '.join(bad))
     man = [s for s in sigs if s.kind.startswith('man')]
     bad = []
-    for left in (True, False):
-        side = sorted((s for s in man if (g.point_on(g.edges[s.joint.edge], s.joint.t)[0] < st.xc) == left),
+    for odd in (True, False):
+        side = sorted((s for s in man if st.odd_side(g.point_on(g.edges[s.joint.edge], s.joint.t)[0]) == odd),
                       key=lambda s: abs(g.point_on(g.edges[s.joint.edge], s.joint.t)[0] - st.xc),
                       reverse=True)
         ns = [int(s.name[1:]) for s in side]
-        if any(n % 2 != (1 if left else 0) for n in ns) or ns != sorted(ns):
-            bad.append('слева' if left else 'справа')
+        if any(n % 2 != (1 if odd else 0) for n in ns) or ns != sorted(ns):
+            bad.append('нечётная' if odd else 'чётная')
     check(not bad, '2.5 маневровые: нечётные/чётные по горловинам, номера растут к оси',
           ', '.join(bad))
     from signals import _overlap, footprint
