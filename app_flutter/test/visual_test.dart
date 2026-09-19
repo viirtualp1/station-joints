@@ -16,6 +16,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:station_joints/main.dart';
 import 'package:station_joints/recent.dart';
+import 'package:station_joints/scheme_view.dart';
 
 const shots = String.fromEnvironment('SHOTS');
 const stj = String.fromEnvironment('STJ'); // файл работы для проверки открытия
@@ -237,6 +238,82 @@ void main() {
     await _waitFor(t, find.textContaining('светофоров'));
     expect(find.text('не сохранено'), findsOneWidget);
     await _shot(t, '12_restored');
+    await t.pumpWidget(const SizedBox());
+    await t.runAsync(() => Future.delayed(const Duration(milliseconds: 300)));
+  });
+
+  testWidgets('ручные правки: стык, пути, светофор, «Объясни», перекомпоновка', (t) async {
+    t.view.physicalSize = const Size(1480, 900);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    // от прошлого теста могла остаться резервная копия – иначе спросит про восстановление
+    final auto = Directory('${Recent.dir}${Platform.pathSeparator}autosave');
+    if (auto.existsSync()) auto.deleteSync(recursive: true);
+    await t.pumpWidget(RepaintBoundary(key: _boundary, child: StationApp(initialPath: _sample)));
+    await _waitFor(t, find.textContaining('светофоров'));
+    await t.pump(const Duration(milliseconds: 300));
+    final view = t.widget<SchemeView>(find.byType(SchemeView).first);
+    final scene = view.scene!;
+    final origin = t.getTopLeft(find.byType(SchemeView).first);
+    Offset scr(Offset mm) => origin + view.controller.toScreen(mm)!;
+
+    // 1) стык тянется мышью вдоль пути
+    final j = scene.joints.firstWhere((j) {
+      final e = scene.edges.firstWhere((e) => e.id == j.edge);
+      return (e.b - e.a).dx.abs() > 30 && j.t > 12 && j.t < (e.b - e.a).distance - 12;
+    });
+    await t.dragFrom(scr(j.pos), const Offset(-12, 0));
+    await _waitFor(t, find.text('Стык перенесён'));
+
+    // 2) «Пути»: новый отрезок от конца пути
+    await t.sendKeyEvent(LogicalKeyboardKey.keyT);
+    await t.pump();
+    final end = scene.nodes.firstWhere((n) => n.isEnd && n.mark == 'tupik');
+    await t.dragFrom(scr(end.pos), const Offset(0, -25));
+    await _waitFor(t, find.textContaining('Отрезок добавлен'));
+    await _shot(t, '13_track');
+
+    // 3) тип конца: клик по концу -> меню -> «Перегон»
+    final v2 = t.widget<SchemeView>(find.byType(SchemeView).first);
+    final end2 = v2.scene!.nodes.firstWhere((n) => n.isEnd && n.mark == 'tupik');
+    await t.tapAt(origin + v2.controller.toScreen(end2.pos)!);
+    for (var i = 0; i < 10; i++) {
+      await t.pump(const Duration(milliseconds: 100)); // меню раскрывается
+    }
+    await t.tap(find.text('Перегон').last);
+    await _waitFor(t, find.text('Конец пути: перегон'));
+
+    // 4) светофор: выбрать в списке, переименовать
+    await t.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await t.tap(find.text('Светофоры').last);
+    await t.pump();
+    await t.tap(find.text('ЧД').last);
+    await t.pump(const Duration(milliseconds: 300));
+    await t.tap(find.text('Свойства').last);
+    await t.pump();
+    await t.enterText(find.byType(TextField).last, 'ЧДх');
+    await t.testTextInput.receiveAction(TextInputAction.done);
+    await _waitFor(t, find.text('Светофор изменён'));
+    expect(find.text('изменён вручную'), findsOneWidget);
+
+    // 5) «Объясни»: F1 и клик по стыку
+    await t.sendKeyEvent(LogicalKeyboardKey.f1);
+    await t.pump();
+    final v3 = t.widget<SchemeView>(find.byType(SchemeView).first);
+    final jj = v3.scene!.joints.firstWhere((x) => x.rule == 'в');
+    await t.tapAt(origin + v3.controller.toScreen(jj.pos)!);
+    await _waitFor(t, find.textContaining('Методичка:'));
+    await _shot(t, '14_explain');
+
+    // 6) «Два листа» – ручные правки стыков переносятся
+    await t.sendKeyEvent(LogicalKeyboardKey.f1);
+    await t.tap(find.text('Два листа (горловины раздельно)'));
+    await _waitFor(t, find.textContaining('Ручные правки стыков перенесены'));
+    await t.tap(find.text('Светофоры').last);
+    await t.pump();
+    expect(find.text('ЧДх'), findsWidgets); // правка светофора тоже сохранилась
+    await _shot(t, '15_after_relayout');
+
     await t.pumpWidget(const SizedBox());
     await t.runAsync(() => Future.delayed(const Duration(milliseconds: 300)));
   });

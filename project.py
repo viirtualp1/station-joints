@@ -22,12 +22,12 @@ from PIL import Image
 from graph import Annotation, Graph, Joint
 
 FORMAT = 'station-joints'
-VERSION = 1
+VERSION = 2               # 2: тип конца «вручную», правки светофоров
 EXT = '.stj'
 
 
 def graph_to_json(g: Graph) -> dict:
-    return {'nodes': [[int(n.id), float(n.x), float(n.y), n.mark, n.number, n.label]
+    return {'nodes': [[int(n.id), float(n.x), float(n.y), n.mark, n.number, n.label, n.fixed_mark]
                       for n in g.nodes.values()],
             'edges': [[int(e.id), int(e.a), int(e.b)] for e in g.edges.values()],
             'nid': int(g._nid), 'eid': int(g._eid)}
@@ -36,8 +36,8 @@ def graph_to_json(g: Graph) -> dict:
 def graph_from_json(d: dict) -> Graph:
     from graph import Edge, Node
     g = Graph()
-    for i, x, y, mark, number, label in d['nodes']:
-        g.nodes[i] = Node(i, x, y, mark, number, label)
+    for i, x, y, mark, number, label, *rest in d['nodes']:
+        g.nodes[i] = Node(i, x, y, mark, number, label, bool(rest and rest[0]))
     for i, a, b in d['edges']:
         g.edges[i] = Edge(i, a, b)
     g._nid, g._eid = d['nid'], d['eid']

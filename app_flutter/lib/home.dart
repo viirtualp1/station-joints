@@ -61,6 +61,9 @@ class _HomeState extends State<Home> {
   _Doc? _doc; // активный таб
   final _noCam = SchemeController(); // холст без схемы
   _Doc? _renaming; // таб, имя которого сейчас редактируется
+  bool _explain = false; // режим «Объясни»
+  String? _explainKey; // что сейчас объяснено (объект + версия сцены)
+  Map<String, dynamic>? _explainData;
 
   Scene? get _scene => _doc?.scene;
   String? get _path => _doc?.path;
@@ -707,14 +710,14 @@ class _HomeState extends State<Home> {
 
   Future<void> _relayout() async {
     if (_path == null) return;
-    final hadEdits = _scene?.source?['edited'] == true;
     final res = await _run(
       'Перекомпоновка…',
       () => _call('relayout', {'sheets': _twoSheets ? _fmt : null, 'odd_right': _oddRight}),
     );
     _apply(res);
     if (res != null) setState(() => _dirty = true);
-    if (res != null && hadEdits) _say('Стыки расставлены по правилам заново – ручные правки сброшены');
+    final kept = (res?['kept'] as int?) ?? 0;
+    if (kept > 0) _say('Ручные правки стыков перенесены ($kept)');
   }
 
   Future<void> _setLayer(String k, bool v) async {
@@ -780,6 +783,236 @@ class _HomeState extends State<Home> {
 
   String get _base => _baseOf(_doc);
 
+  // ------------------------------------------------------------------ ручные правки
+  /// Команда правки: пересчёт схемы, отметка «не сохранено», короткое сообщение.
+  Future<Map<String, dynamic>?> _edit(String cmd, Map<String, dynamic> args, String ok) async {
+    if (_scene == null) return null;
+    if (_renaming == null) _focus.requestFocus(); // горячие клавиши – снова к схеме
+    final res = await _run('Пересчёт…', () => _call(cmd, args));
+    if (res == null) return null;
+    _apply(res);
+    setState(() => _dirty = true);
+    _say(ok);
+    return res;
+  }
+
+  Future<void> _moveJoint(JointObj j, double t) async {
+    if (await _edit('move_joint', {'joint': j.id, 't': t}, 'Стык перенесён') == null) return;
+    final nj = _scene!.joints.where((x) => x.id == j.id).firstOrNull;
+    if (nj != null) setState(() => _selected = JointHit(nj));
+  }
+
+  Future<void> _addSegment(Map<String, dynamic> a, Map<String, dynamic> b) =>
+      _edit('edit_track', {'op': 'add_edge', 'a': a, 'b': b}, 'Отрезок добавлен – схема перестроена');
+
+  Future<void> _deleteChain(EdgeHit h) =>
+      _edit('edit_track', {'op': 'delete_edge', 'edge': h.e.id}, 'Отрезок удалён – схема перестроена');
+
+  static const _endNames = {'tupik': 'тупик', 'peregon': 'перегон', 'pp': 'подъездной путь'};
+
+  Future<void> _setEnd(NodeObj n, String mark) =>
+      _edit('edit_track', {'op': 'set_end', 'node': n.id, 'mark': mark}, 'Конец пути: ${_endNames[mark]}');
+
+  Future<void> _nodeMenu(Offset global, NodeObj n) async {
+    final t = Tok.of(context);
+    final v = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(global.dx, global.dy, global.dx, global.dy),
+      shape: RoundedRectangleBorder(side: BorderSide(color: t.line)),
+      color: t.panel,
+      items: [
+        PopupMenuItem<String>(
+          enabled: false,
+          height: 26,
+          child: Text(
+            'ТИП КОНЦА ПУТИ',
+            style: TextStyle(fontSize: 10.5, letterSpacing: 0.6, fontWeight: FontWeight.w600, color: t.muted),
+          ),
+        ),
+        for (final e in _endNames.entries)
+          PopupMenuItem<String>(
+            value: e.key,
+            height: 32,
+            child: Row(
+              children: [
+                SizedBox(width: 20, child: n.mark == e.key ? Icon(Icons.check, size: 15, color: t.accent) : null),
+                Text(e.value[0].toUpperCase() + e.value.substring(1), style: TextStyle(fontSize: 13, color: t.text)),
+              ],
+            ),
+          ),
+      ],
+    );
+    if (v != null && v != n.mark) await _setEnd(n, v);
+  }
+
+  Future<void> _editSignal(SignalObj g, {String? name, String? kind, bool delete = false}) async {
+    await _edit('edit_signal', {
+      'signal': g.id,
+      'name': ?name,
+      'kind': ?kind,
+      if (delete) 'delete': true,
+    }, delete ? 'Светофор ${g.name} удалён' : 'Светофор изменён');
+    if (!delete) _reselectSignal(g.joint, g.toward);
+  }
+
+  Future<void> _resetSignal(SignalObj g) async {
+    await _edit('reset_signal', {'signal': g.id}, 'Светофор – как по правилам');
+    _reselectSignal(g.joint, g.toward);
+  }
+
+  Future<void> _addSignal(JointObj j, int toward) async {
+    if (await _edit('add_signal', {'joint': j.id, 'toward': toward}, 'Светофор добавлен – задайте имя и тип') == null) {
+      return;
+    }
+    _reselectSignal(j.id, toward);
+  }
+
+  /// После пересчёта номера светофоров меняются – выбрать тот же по стыку и направлению.
+  void _reselectSignal(int joint, int toward) {
+    final g = _scene?.signals.where((x) => x.joint == joint && x.toward == toward).firstOrNull;
+    if (g != null) {
+      setState(() {
+        _selected = SignalHit(g);
+        _tab = 0;
+      });
+    }
+  }
+
+  // ------------------------------------------------------------------ «Объясни»
+  static String? _hitKey(Hit? h) => switch (h) {
+    JointHit(:final j) => 'joint:${j.id}',
+    SignalHit(:final s) => 'signal:${s.id}',
+    SectionHit(:final sec) => 'section:${sec.name}',
+    NodeHit(:final n) => 'node:${n.id}',
+    _ => null,
+  };
+
+  /// Выделили объект в режиме «Объясни» – запросить объяснение (один раз на объект и сцену).
+  void _syncExplain() {
+    if (!_explain) return;
+    final what = _hitKey(_selected);
+    final key = what == null ? null : '$what@${identityHashCode(_scene)}';
+    if (key == _explainKey) return;
+    _explainKey = key;
+    if (what == null) {
+      _explainData = null;
+      return;
+    }
+    final i = what.indexOf(':');
+    _call('explain', {'what': what.substring(0, i), 'target': what.substring(i + 1)})
+        .then((r) {
+          if (mounted && _explainKey == key) setState(() => _explainData = r);
+        })
+        .catchError((Object e) {
+          if (mounted && _explainKey == key) {
+            setState(
+              () => _explainData = {
+                'title': 'Не получилось объяснить',
+                'items': [
+                  {'h': 'Ошибка', 't': '$e'},
+                ],
+              },
+            );
+          }
+        });
+  }
+
+  void _toggleExplain() => setState(() {
+    _explain = !_explain;
+    _explainKey = null;
+    _explainData = null;
+  });
+
+  Widget _explainCard(Tok t) {
+    final d = _explainData;
+    final items = [for (final i in (d?['items'] as List? ?? const [])) (i as Map).cast<String, dynamic>()];
+    final ref = d?['ref'] as String? ?? '';
+    return Container(
+      width: 380,
+      constraints: const BoxConstraints(maxHeight: 460),
+      decoration: BoxDecoration(
+        color: t.panel,
+        border: Border.all(color: t.accent),
+        boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 3))],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            height: 30,
+            padding: const EdgeInsets.only(left: 12, right: 2),
+            color: t.accentSoft,
+            child: Row(
+              children: [
+                Icon(Icons.school_outlined, size: 15, color: t.accent),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'ОБЪЯСНИ',
+                    style: TextStyle(fontSize: 10.5, letterSpacing: 0.6, fontWeight: FontWeight.w600, color: t.accent),
+                  ),
+                ),
+                _IconBtn(Icons.close, 'Выключить (F1)', _toggleExplain, size: 26),
+              ],
+            ),
+          ),
+          Flexible(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              child: d == null
+                  ? Text(
+                      _selected == null
+                          ? 'Кликните по стыку, светофору, стрелке, концу пути или участку – объясню, '
+                                'почему он стоит именно так.'
+                          : 'Секунду…',
+                      style: TextStyle(fontSize: 12.5, height: 1.45, color: t.muted),
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          d['title'] as String? ?? '',
+                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: t.text),
+                        ),
+                        for (final it in items) ...[
+                          const SizedBox(height: 9),
+                          Text(
+                            '${it['h']}'.toUpperCase(),
+                            style: TextStyle(
+                              fontSize: 10,
+                              letterSpacing: 0.5,
+                              fontWeight: FontWeight.w600,
+                              color: t.muted,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text('${it['t']}', style: TextStyle(fontSize: 12.5, height: 1.45, color: t.text)),
+                        ],
+                        if (ref.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Container(height: 1, color: t.line),
+                          const SizedBox(height: 8),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.menu_book_outlined, size: 14, color: t.muted),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text('Методичка: $ref', style: TextStyle(fontSize: 11.5, color: t.muted)),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _export(String kind) async {
     if (_scene == null) return;
     final (ext, label, suffix, cmd) = switch (kind) {
@@ -808,11 +1041,19 @@ class _HomeState extends State<Home> {
   // ------------------------------------------------------------------ клавиши
   KeyEventResult _onKey(FocusNode n, KeyEvent e) {
     if (e is! KeyDownEvent) return KeyEventResult.ignored;
-    if (_renaming != null) return KeyEventResult.ignored; // печатают имя таба
+    // печатают в поле (имя таба, имя светофора) – горячие клавиши молчат
+    final pf = FocusManager.instance.primaryFocus;
+    if (_renaming != null || pf?.context?.findAncestorWidgetOfExactType<EditableText>() != null) {
+      return KeyEventResult.ignored;
+    }
     final ctrl = HardwareKeyboard.instance.isControlPressed;
     final shift = HardwareKeyboard.instance.isShiftPressed;
     final k = e.logicalKey;
-    if (k == LogicalKeyboardKey.f2) {
+    if (k == LogicalKeyboardKey.f1) {
+      if (_scene != null) _toggleExplain();
+    } else if (k == LogicalKeyboardKey.keyT && !ctrl) {
+      if (_scene != null) setState(() => _tool = Tool.track);
+    } else if (k == LogicalKeyboardKey.f2) {
       if (_doc != null) _startRename(_doc!);
     } else if (ctrl && k == LogicalKeyboardKey.tab) {
       _cycleTab(shift ? -1 : 1);
@@ -843,6 +1084,12 @@ class _HomeState extends State<Home> {
       });
     } else if ((k == LogicalKeyboardKey.delete || k == LogicalKeyboardKey.backspace) && _selected is JointHit) {
       _removeJoint((_selected as JointHit).j);
+    } else if ((k == LogicalKeyboardKey.delete || k == LogicalKeyboardKey.backspace) && _selected is SignalHit) {
+      _editSignal((_selected as SignalHit).s, delete: true);
+    } else if ((k == LogicalKeyboardKey.delete || k == LogicalKeyboardKey.backspace) &&
+        _selected is EdgeHit &&
+        _tool == Tool.track) {
+      _deleteChain(_selected as EdgeHit);
     } else if (k == LogicalKeyboardKey.keyN && _selected is JointHit) {
       _toggleNegab((_selected as JointHit).j);
     } else if (k == LogicalKeyboardKey.digit0 || k == LogicalKeyboardKey.numpad0) {
@@ -876,6 +1123,7 @@ class _HomeState extends State<Home> {
     final t = Tok.of(context);
     if (_fatal != null) return _FatalScreen(text: _fatal!);
     _syncTitle();
+    _syncExplain();
     return Focus(
       focusNode: _focus,
       autofocus: true,
@@ -962,6 +1210,15 @@ class _HomeState extends State<Home> {
             _tool == Tool.joint,
             has ? () => setState(() => _tool = Tool.joint) : null,
           ),
+          _ToolBtn(
+            Icons.timeline,
+            'Пути',
+            'T',
+            _tool == Tool.track,
+            has ? () => setState(() => _tool = Tool.track) : null,
+          ),
+          const _Sep(),
+          _ToolBtn(Icons.school_outlined, 'Объясни', 'F1', _explain, has ? _toggleExplain : null),
           const _Sep(),
           _TextBtn('Расставить заново', 'Ctrl+R', has ? _recompute : null),
           const Spacer(),
@@ -1043,17 +1300,24 @@ class _HomeState extends State<Home> {
       ),
       child: Stack(
         children: [
-          // у каждого таба свой холст: зум и положение сохраняются при переключении
+          // у каждого таба свой холст: зум и положение сохраняются при переключении;
+          // клик по схеме возвращает горячие клавиши (если фокус был в поле ввода)
           Positioned.fill(
-            child: _docs.isEmpty
-                ? _schemeView(null)
-                : IndexedStack(
-                    index: _doc == null ? 0 : _docs.indexOf(_doc!),
-                    children: [for (final d in _docs) _schemeView(d)],
-                  ),
+            child: Listener(
+              onPointerDown: (_) {
+                if (!_focus.hasPrimaryFocus && _renaming == null) _focus.requestFocus();
+              },
+              child: _docs.isEmpty
+                  ? _schemeView(null)
+                  : IndexedStack(
+                      index: _doc == null ? 0 : _docs.indexOf(_doc!),
+                      children: [for (final d in _docs) _schemeView(d)],
+                    ),
+            ),
           ),
           if (_scene == null) Positioned.fill(child: _empty(t)),
           if (_scene != null) Positioned(right: 10, bottom: 10, child: _zoomBox(t)),
+          if (_explain && _scene != null) Positioned(left: 12, top: 12, child: _explainCard(t)),
           if (_toast != null)
             Positioned(
               left: 0,
@@ -1090,6 +1354,9 @@ class _HomeState extends State<Home> {
         _ordinate = ord;
       }),
       onContext: _contextMenu,
+      onMoveJoint: _moveJoint,
+      onAddSegment: _addSegment,
+      onNodeMenu: _nodeMenu,
     );
   }
 
@@ -1398,6 +1665,84 @@ class _HomeState extends State<Home> {
               _TextBtn('Удалить', 'Del', () => _removeJoint(j), outlined: true, danger: true),
             ],
           ),
+          ..._jointSignalButtons(t, j),
+          const SizedBox(height: 12),
+          Text(
+            'Потяните стык мышью – он сдвинется вдоль пути с шагом 5 мм.',
+            style: TextStyle(fontSize: 11.5, height: 1.4, color: t.muted),
+          ),
+        ],
+      );
+    }
+    if (s is NodeHit) {
+      final n = s.n;
+      if (n.isSwitch) {
+        return ListView(
+          padding: const EdgeInsets.all(12),
+          children: [
+            Text(
+              'Стрелка ${n.label}',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: t.text),
+            ),
+            const SizedBox(height: 8),
+            kv('Ордината', '${(n.pos.dx - _scene!.originX).toStringAsFixed(0)} мм', monoV: true),
+            const SizedBox(height: 10),
+            Text(
+              'Номер – по правилам п. 2.3. Нажмите F1, чтобы увидеть объяснение.',
+              style: TextStyle(fontSize: 11.5, height: 1.4, color: t.muted),
+            ),
+          ],
+        );
+      }
+      return ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          Text(
+            'Конец пути${n.label.isEmpty ? '' : ' ${n.label}'}',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: t.text),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              for (final e in _endNames.entries)
+                Expanded(
+                  child: _Seg(
+                    e.key == 'pp' ? 'п/п' : e.value[0].toUpperCase() + e.value.substring(1),
+                    n.mark == e.key,
+                    n.mark == e.key ? null : () => _setEnd(n, e.key),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            n.manual ? 'Тип задан вручную.' : 'Тип определён автоматически – если ошибся, выберите нужный.',
+            style: TextStyle(fontSize: 11.5, height: 1.4, color: t.muted),
+          ),
+        ],
+      );
+    }
+    if (s is EdgeHit) {
+      return ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          Text(
+            'Отрезок пути',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: t.text),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'От стрелки до стрелки или до конца пути, через изломы.',
+            style: TextStyle(fontSize: 12, height: 1.4, color: t.muted),
+          ),
+          const SizedBox(height: 12),
+          Row(children: [_TextBtn('Удалить отрезок', 'Del', () => _deleteChain(s), outlined: true, danger: true)]),
+          const SizedBox(height: 12),
+          Text(
+            'Лишний отрезок, распознанный по ошибке, – удалите. Чтобы добавить путь, '
+            'протяните мышью от узла или пути.',
+            style: TextStyle(fontSize: 11.5, height: 1.4, color: t.muted),
+          ),
         ],
       );
     }
@@ -1433,9 +1778,33 @@ class _HomeState extends State<Home> {
             style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: t.text),
           ),
           const SizedBox(height: 8),
-          kv('Тип', g.kind),
+          if (g.manual) Text('изменён вручную', style: TextStyle(fontSize: 11.5, color: t.accent)),
+          const SizedBox(height: 10),
+          _SignalNameField(
+            key: ValueKey('sig-${g.joint}-${g.toward}-${g.name}'),
+            name: g.name,
+            onSubmit: (v) {
+              if (v.trim().isNotEmpty && v.trim() != g.name) _editSignal(g, name: v.trim());
+            },
+          ),
+          const SizedBox(height: 8),
+          _KindPicker(
+            code: g.code,
+            onPick: (c) => _editSignal(g, kind: c),
+          ),
+          const SizedBox(height: 10),
           kv('Ордината', '${g.ordinate} мм', monoV: true),
           kv('Основание', g.why),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _TextBtn('Удалить', 'Del', () => _editSignal(g, delete: true), outlined: true, danger: true),
+              if (g.manual) ...[
+                const SizedBox(width: 6),
+                _TextBtn('Как по правилам', null, () => _resetSignal(g), outlined: true),
+              ],
+            ],
+          ),
         ],
       );
     }
@@ -1444,12 +1813,41 @@ class _HomeState extends State<Home> {
       child: Text(
         _scene == null
             ? 'Нет схемы'
-            : 'Ничего не выбрано.\n\nКлик по стыку или светофору – свойства.\n'
-                  'J – инструмент «Стык»: клик по пути ставит стык.\n'
-                  'Del – удалить выбранный стык, N – габарит/негабарит.',
+            : 'Ничего не выбрано.\n\nКлик по стыку, светофору, стрелке или концу пути – свойства.\n'
+                  'Стык можно потянуть мышью вдоль пути.\n'
+                  'J – «Стык»: клик по пути ставит стык.\n'
+                  'T – «Пути»: исправить распознанную схему.\n'
+                  'F1 – «Объясни»: почему объект стоит именно так.',
         style: TextStyle(fontSize: 12, height: 1.5, color: t.muted),
       ),
     );
+  }
+
+  /// Кнопки «добавить светофор» у стыка: в обе стороны по пути.
+  List<Widget> _jointSignalButtons(Tok t, JointObj j) {
+    final e = _scene!.edges.where((e) => e.id == j.edge).firstOrNull;
+    if (e == null) return const [];
+    String arrow(Offset to) {
+      final d = to - j.pos;
+      if (d.dx.abs() >= d.dy.abs()) return d.dx < 0 ? '←' : '→';
+      return d.dy < 0 ? '↑' : '↓';
+    }
+
+    return [
+      const SizedBox(height: 14),
+      Text(
+        'ДОБАВИТЬ СВЕТОФОР',
+        style: TextStyle(fontSize: 10.5, letterSpacing: 0.6, fontWeight: FontWeight.w600, color: t.muted),
+      ),
+      const SizedBox(height: 6),
+      Row(
+        children: [
+          _TextBtn('${arrow(e.a)} движение', null, () => _addSignal(j, e.na), outlined: true),
+          const SizedBox(width: 6),
+          _TextBtn('движение ${arrow(e.b)}', null, () => _addSignal(j, e.nb), outlined: true),
+        ],
+      ),
+    ];
   }
 
   Widget _signals(Tok t) {
@@ -1509,6 +1907,15 @@ class _HomeState extends State<Home> {
     } else if (h is SectionHit) {
       final sw = h.sec.switches;
       hint = 'Участок ${h.sec.name} – ${h.sec.kind}${sw.isEmpty ? '' : ', стрелки ${sw.join(', ')}'}';
+    } else if (h is NodeHit) {
+      hint = h.n.isSwitch
+          ? 'Стрелка ${h.n.label}'
+          : 'Конец пути${h.n.label.isEmpty ? '' : ' ${h.n.label}'} – ${_endNames[h.n.mark] ?? 'тип не задан'}'
+                '${_tool == Tool.track ? ' · клик – сменить тип' : ''}';
+    } else if (_tool == Tool.track) {
+      hint = h is EdgeHit
+          ? 'Отрезок пути – клик выбрать, Del удалить · тяните – новый отрезок'
+          : 'Пути: тяните от узла или пути – новый отрезок · клик по отрезку – выбрать · Esc – выход';
     } else if (_tool == Tool.joint) {
       hint = 'Стык: клик по пути ставит стык · Esc – выход';
     } else {
@@ -2382,6 +2789,130 @@ class _TabNameFieldState extends State<_TabNameField> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Имя светофора: Enter – применить.
+class _SignalNameField extends StatefulWidget {
+  final String name;
+  final void Function(String) onSubmit;
+  const _SignalNameField({super.key, required this.name, required this.onSubmit});
+
+  @override
+  State<_SignalNameField> createState() => _SignalNameFieldState();
+}
+
+class _SignalNameFieldState extends State<_SignalNameField> {
+  late final _ctl = TextEditingController(text: widget.name);
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Tok.of(context);
+    return Row(
+      children: [
+        SizedBox(
+          width: 92,
+          child: Text('Имя', style: TextStyle(fontSize: 12, color: t.muted)),
+        ),
+        Expanded(
+          child: SizedBox(
+            height: 28,
+            child: TextField(
+              controller: _ctl,
+              onSubmitted: (v) {
+                FocusScope.of(context).unfocus(); // горячие клавиши снова работают
+                widget.onSubmit(v);
+              },
+              style: TextStyle(fontSize: 12.5, fontFamily: mono, color: t.text),
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: 'Enter – применить',
+                hintStyle: TextStyle(fontSize: 11.5, color: t.muted),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.zero,
+                  borderSide: BorderSide(color: t.line),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.zero,
+                  borderSide: BorderSide(color: t.accent),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Тип светофора.
+class _KindPicker extends StatelessWidget {
+  static const kinds = {
+    'entry': 'входной мачтовый',
+    'exit_mast': 'выходной мачтовый',
+    'exit_dwarf': 'выходной карликовый',
+    'man_dwarf': 'маневровый карликовый',
+    'man_mast': 'маневровый мачтовый',
+  };
+  final String code;
+  final void Function(String) onPick;
+  const _KindPicker({required this.code, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Tok.of(context);
+    return Row(
+      children: [
+        SizedBox(
+          width: 92,
+          child: Text('Тип', style: TextStyle(fontSize: 12, color: t.muted)),
+        ),
+        Expanded(
+          child: PopupMenuButton<String>(
+            tooltip: 'Тип светофора',
+            position: PopupMenuPosition.under,
+            shape: RoundedRectangleBorder(side: BorderSide(color: t.line)),
+            color: t.panel,
+            onSelected: (c) {
+              if (c != code) onPick(c);
+            },
+            itemBuilder: (_) => [
+              for (final e in kinds.entries)
+                PopupMenuItem(
+                  value: e.key,
+                  height: 30,
+                  child: Row(
+                    children: [
+                      SizedBox(width: 20, child: e.key == code ? Icon(Icons.check, size: 15, color: t.accent) : null),
+                      Text(e.value, style: TextStyle(fontSize: 12.5, color: t.text)),
+                    ],
+                  ),
+                ),
+            ],
+            child: Container(
+              height: 28,
+              padding: const EdgeInsets.only(left: 8),
+              decoration: BoxDecoration(border: Border.all(color: t.line)),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(kinds[code] ?? code, style: TextStyle(fontSize: 12.5, color: t.text)),
+                  ),
+                  Icon(Icons.arrow_drop_down, size: 18, color: t.muted),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

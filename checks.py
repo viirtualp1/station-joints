@@ -7,6 +7,12 @@ from __future__ import annotations
 from joints import Station, _nm, _numkey
 
 
+def _digits(name: str) -> int | None:
+    """Номер в имени («М12» -> 12, «3Т» -> 3); None – имя не по шаблону (правка вручную)."""
+    d = ''.join(ch for ch in name if ch.isdigit())
+    return int(d) if d else None
+
+
 def _num(st: Station, s) -> int:
     """Номер стрелки числом (0 – если не пронумерована)."""
     return int(st.g.nodes[s].number or 0)
@@ -43,7 +49,8 @@ def audit(st: Station) -> list[tuple[bool, str, str]]:
         if not n.label:
             continue
         _, cur = _walk_to_switch(st, n.id)
-        if cur and (int(n.label[:-1]) % 2) != (_num(st, cur) % 2):
+        num = _digits(n.label)
+        if cur and (num is None or num % 2 != _num(st, cur) % 2):
             bad.append(n.label)
     check(not bad, '2.2 тупики: в нечётной горловине – нечётные, в чётной – чётные (…Т)',
           ', '.join(bad))
@@ -127,8 +134,9 @@ def audit(st: Station) -> list[tuple[bool, str, str]]:
         side = sorted((s for s in man if st.odd_side(g.point_on(g.edges[s.joint.edge], s.joint.t)[0]) == odd),
                       key=lambda s: abs(g.point_on(g.edges[s.joint.edge], s.joint.t)[0] - st.xc),
                       reverse=True)
-        ns = [int(s.name[1:]) for s in side]
-        if any(n % 2 != (1 if odd else 0) for n in ns) or ns != sorted(ns):
+        nums = [_digits(s.name) for s in side]
+        ns = [n for n in nums if n is not None]
+        if len(ns) < len(nums) or any(n % 2 != (1 if odd else 0) for n in ns) or ns != sorted(ns):
             bad.append('нечётная' if odd else 'чётная')
     check(not bad, '2.5 маневровые: нечётные/чётные по горловинам, номера растут к оси',
           ', '.join(bad))

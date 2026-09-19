@@ -92,13 +92,17 @@ class JointObj {
   final Offset pos;
   final String rule, text;
   final bool negab;
-  JointObj(this.id, this.pos, this.rule, this.text, this.negab);
+  final int edge; // отрезок, на котором стоит стык
+  final double t; // расстояние от начала отрезка, мм
+  JointObj(this.id, this.pos, this.rule, this.text, this.negab, this.edge, this.t);
 }
 
 class EdgeObj {
   final int id;
   final Offset a, b;
-  EdgeObj(this.id, this.a, this.b);
+  final int na, nb; // узлы концов
+  final int chain; // отрезок «от стрелки до стрелки» (через изломы)
+  EdgeObj(this.id, this.a, this.b, this.na, this.nb, this.chain);
   double get length => (b - a).distance;
 }
 
@@ -107,7 +111,31 @@ class SignalObj {
   final String name, kind, why;
   final int ordinate;
   final Rect box;
-  SignalObj(this.id, this.name, this.kind, this.why, this.ordinate, this.box);
+  final String code; // entry, exit_mast, exit_dwarf, man_dwarf, man_mast
+  final bool manual;
+  final int joint, toward;
+  SignalObj(
+    this.id,
+    this.name,
+    this.kind,
+    this.why,
+    this.ordinate,
+    this.box, {
+    this.code = '',
+    this.manual = false,
+    this.joint = -1,
+    this.toward = -1,
+  });
+}
+
+/// Стрелка или конец пути.
+class NodeObj {
+  final int id;
+  final Offset pos;
+  final bool isSwitch, isEnd, manual;
+  final String? mark; // tupik, peregon, pp
+  final String label;
+  NodeObj(this.id, this.pos, this.isSwitch, this.isEnd, this.mark, this.label, this.manual);
 }
 
 /// Изолированный участок (рельсовая цепь): имя, тип, стрелки, отрезки для подсветки.
@@ -164,6 +192,7 @@ class Scene {
   final List<JointObj> joints;
   final List<EdgeObj> edges;
   final List<SignalObj> signals;
+  final List<NodeObj> nodes;
   final List<SectionObj> sections;
   final List<String> issues;
   final String? undo, redo; // что отменит / повторит Ctrl+Z / Ctrl+Y
@@ -178,6 +207,7 @@ class Scene {
     required this.joints,
     required this.edges,
     required this.signals,
+    this.nodes = const [],
     required this.sections,
     required this.issues,
     this.undo,
@@ -204,11 +234,20 @@ class Scene {
             o['rule'] as String,
             o['text'] as String? ?? '',
             o['negab'] as bool,
+            o['edge'] as int? ?? -1,
+            _d(o['t']),
           ),
       ],
       edges: [
         for (final o in j['edges'] as List)
-          EdgeObj(o['id'] as int, Offset(_d(o['x0']), _d(o['y0'])), Offset(_d(o['x1']), _d(o['y1']))),
+          EdgeObj(
+            o['id'] as int,
+            Offset(_d(o['x0']), _d(o['y0'])),
+            Offset(_d(o['x1']), _d(o['y1'])),
+            o['a'] as int? ?? -1,
+            o['b'] as int? ?? -1,
+            o['chain'] as int? ?? (o['id'] as int),
+          ),
       ],
       signals: [
         for (final o in j['signals'] as List)
@@ -222,6 +261,22 @@ class Scene {
               final bb = (o['box'] as List).map(_d).toList();
               return Rect.fromLTRB(bb[0], bb[1], bb[2], bb[3]);
             }(),
+            code: o['code'] as String? ?? '',
+            manual: o['manual'] as bool? ?? false,
+            joint: o['joint'] as int? ?? -1,
+            toward: o['toward'] as int? ?? -1,
+          ),
+      ],
+      nodes: [
+        for (final o in (j['nodes'] as List? ?? const []))
+          NodeObj(
+            o['id'] as int,
+            Offset(_d(o['x']), _d(o['y'])),
+            o['switch'] as bool? ?? false,
+            o['end'] as bool? ?? false,
+            o['mark'] as String?,
+            o['label'] as String? ?? '',
+            o['manual'] as bool? ?? false,
           ),
       ],
       sections: [for (final o in (j['sections'] as List? ?? const [])) SectionObj.fromJson(o as Map<String, dynamic>)],

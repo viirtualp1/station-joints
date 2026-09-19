@@ -14,6 +14,7 @@ from PIL import Image
 from joints import RULE_TEXT, Station
 from render import REC_PX, Recorder, render
 from signals import footprint, signal_rows
+from edits import chain
 from tables import issues, section_rows
 
 LAYERS = dict(joints=True, signals=True, numbers=True, letters=False, sections=False,
@@ -53,14 +54,33 @@ def build_scene(st: Station, annots=(), layers: dict | None = None) -> dict:
     for i, j in enumerate(st.joints):
         jx, jy = g.point_on(g.edges[j.edge], j.t)
         joints.append({'id': i, 'x': jx, 'y': jy, 'rule': j.rule, 'negab': j.negab,
-                       'text': RULE_TEXT.get(j.rule, '')})
+                       'text': RULE_TEXT.get(j.rule, ''), 'edge': j.edge, 't': j.t})
+    chain_of = {}                               # ребро -> отрезок «от стрелки до стрелки»
+    for e in g.edges.values():
+        if e.id not in chain_of:
+            ids = chain(g, e.id)
+            for i in ids:
+                chain_of[i] = ids[0]
     edges = [{'id': e.id, 'x0': g.nodes[e.a].x, 'y0': g.nodes[e.a].y,
-              'x1': g.nodes[e.b].x, 'y1': g.nodes[e.b].y} for e in g.edges.values()]
+              'x1': g.nodes[e.b].x, 'y1': g.nodes[e.b].y, 'a': e.a, 'b': e.b,
+              'chain': chain_of[e.id]} for e in g.edges.values()]
     index = {id(s): i for i, s in enumerate(st.signals)}
+    jindex = {id(j): i for i, j in enumerate(st.joints)}
     signals = []
     for s, kind, x in signal_rows(st):
         signals.append({'id': index[id(s)], 'name': s.name, 'kind': kind, 'why': s.why,
-                        'ordinate': round(x), 'box': list(footprint(st, s))})
+                        'ordinate': round(x), 'box': list(footprint(st, s)),
+                        'code': s.kind, 'manual': s.manual, 'joint': jindex.get(id(s.joint), -1),
+                        'toward': s.toward})
+    # узлы: стрелки и концы путей (правка путей, «Объясни»)
+    nodes = []
+    for n in g.nodes.values():
+        deg = g.degree(n.id)
+        if deg == 2:
+            continue
+        nodes.append({'id': n.id, 'x': n.x, 'y': n.y, 'switch': n.id in st.sw,
+                      'end': deg == 1, 'mark': n.mark, 'label': n.label or n.number or '',
+                      'manual': n.fixed_mark})
     return {
         'bounds': [x0 - 8, y0 - 8, x1 + 8, y1 + 8],
         'origin_x': min(n.x for n in g.nodes.values()),
@@ -70,6 +90,7 @@ def build_scene(st: Station, annots=(), layers: dict | None = None) -> dict:
         'joints': joints,
         'edges': edges,
         'signals': signals,
+        'nodes': nodes,
         'layers': lay,
         'sections': section_rows(st),
         'issues': issues(st),

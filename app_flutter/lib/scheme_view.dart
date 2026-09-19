@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'scene.dart';
 import 'theme.dart';
 
-enum Tool { select, joint }
+enum Tool { select, joint, track }
 
 /// Что под курсором / что выделено.
 sealed class Hit {}
@@ -20,6 +20,11 @@ class JointHit extends Hit {
 class SignalHit extends Hit {
   final SignalObj s;
   SignalHit(this.s);
+}
+
+class NodeHit extends Hit {
+  final NodeObj n;
+  NodeHit(this.n);
 }
 
 class SectionHit extends Hit {
@@ -41,6 +46,9 @@ class SchemeController extends ChangeNotifier {
   void zoomBy(double f) => _s?._zoomAtCenter(f);
   void fit() => _s?._fit(animate: true);
   void focus(Rect r) => _s?._focus(r);
+
+  /// Точка схемы (мм) -> точка холста (px) – для тестов и подсказок.
+  Offset? toScreen(Offset mm) => _s == null ? null : mm * _s!._k + _s!._o;
   void _changed() => notifyListeners();
 }
 
@@ -54,6 +62,9 @@ class SchemeView extends StatefulWidget {
   final void Function(EdgeHit) onAddJoint;
   final void Function(Hit?, double? ordinate) onHover;
   final void Function(Offset global, Hit hit) onContext;
+  final void Function(JointObj j, double t)? onMoveJoint;
+  final void Function(Map<String, dynamic> a, Map<String, dynamic> b)? onAddSegment;
+  final void Function(Offset global, NodeObj n)? onNodeMenu;
 
   const SchemeView({
     super.key,
@@ -66,6 +77,9 @@ class SchemeView extends StatefulWidget {
     required this.onAddJoint,
     required this.onHover,
     required this.onContext,
+    this.onMoveJoint,
+    this.onAddSegment,
+    this.onNodeMenu,
   });
 
   @override
@@ -86,6 +100,13 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
   late final AnimationController _anim = AnimationController(vsync: this, duration: const Duration(milliseconds: 260));
   double _k0 = 1, _k1 = 1;
   Offset _c0 = Offset.zero, _c1 = Offset.zero; // центр экрана в мм – начало/конец
+
+  // перетаскивание стыка вдоль пути
+  JointObj? _dragJoint;
+  Offset? _dragPos;
+  double? _dragT;
+  // рисование нового отрезка (инструмент «Пути»)
+  (Map<String, dynamic>, Offset)? _segStart, _segEnd;
 
   Offset? _down; // точка нажатия (для клика против перетаскивания)
   bool _panning = false;
@@ -216,6 +237,8 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
       for (final sg in s.signals) {
         if (sg.box.inflate(0.5).contains(m)) return SignalHit(sg);
       }
+      final n = _nodeAt(m, 7 / _k);
+      if (n != null) return NodeHit(n);
       // клик по пути – его изолированный участок
       SectionObj? bs;
       var sd = tol * 0.7;
@@ -245,6 +268,70 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
     return be;
   }
 
+  NodeObj? _nodeAt(Offset m, double tol) {
+    NodeObj? best;
+    var bd = tol;
+    for (final n in widget.scene?.nodes ?? const <NodeObj>[]) {
+      final d = (n.pos - m).distance;
+      if (d < bd) {
+        bd = d;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  /// Инструмент «Пути»: узел (конец/стрелка) важнее отрезка.
+  Hit? _trackHit(Offset screen) {
+    final m = _toModel(screen);
+    final n = _nodeAt(m, 9 / _k);
+    if (n != null) return NodeHit(n);
+    final h = _hitTest(screen, edges: true);
+    return h is EdgeHit ? h : null;
+  }
+
+  static double _snap5(double v) => (v / 5).round() * 5.0;
+
+  /// Точка нового отрезка: узел, точка на пути (делит его) или свободная – по сетке 5 мм.
+  (Map<String, dynamic>, Offset) _snapPoint(Offset screen) {
+    final m = _toModel(screen);
+    final n = _nodeAt(m, 10 / _k);
+    if (n != null) return ({'node': n.id}, n.pos);
+    final h = _hitTest(screen, edges: true);
+    if (h is EdgeHit) {
+      final near = h.t < 2 || h.t > h.e.length - 2;
+      if (!near) return ({'edge': h.e.id, 't': h.t}, h.at);
+    }
+    final p = Offset(_snap5(m.dx), _snap5(m.dy));
+    return ({'x': p.dx, 'y': p.dy}, p);
+  }
+
+  /// Стык тянется вдоль своего отрезка; положение – по сетке 5 мм.
+  void _dragJointTo(Offset screen) {
+    final s = widget.scene!;
+    final j = _dragJoint!;
+    final e = s.edges.where((e) => e.id == j.edge).firstOrNull;
+    if (e == null) return;
+    final m = _toModel(screen);
+    final ab = e.b - e.a;
+    final L = ab.distance;
+    if (L < 1.5) return;
+    var f = (((m - e.a).dx * ab.dx + (m - e.a).dy * ab.dy) / ab.distanceSquared).clamp(0.0, 1.0);
+    // сетка: по x для пологих отрезков, по y для крутых
+    if (ab.dx.abs() >= ab.dy.abs()) {
+      final x = _snap5(e.a.dx + ab.dx * f);
+      f = (x - e.a.dx) / ab.dx;
+    } else {
+      final y = _snap5(e.a.dy + ab.dy * f);
+      f = (y - e.a.dy) / ab.dy;
+    }
+    final t = (f * L).clamp(0.5, L - 0.5);
+    setState(() {
+      _dragT = t;
+      _dragPos = e.a + ab * (t / L);
+    });
+  }
+
   // ---------------------------------------------------------------- ввод
   void _onSignal(PointerSignalEvent e) {
     if (e is PointerScrollEvent) {
@@ -260,11 +347,29 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
     _down = e.localPosition;
     _buttons = e.buttons;
     _panning = e.buttons == kMiddleMouseButton;
+    _dragJoint = null;
+    _segStart = _segEnd = null;
+    if (e.buttons != kPrimaryButton || widget.scene == null) return;
+    if (widget.tool == Tool.select && widget.onMoveJoint != null) {
+      final h = _hitTest(e.localPosition);
+      if (h is JointHit) _dragJoint = h.j; // потянули стык
+    } else if (widget.tool == Tool.track && widget.onAddSegment != null) {
+      _segStart = _snapPoint(e.localPosition);
+    }
   }
 
   void _onMove(PointerMoveEvent e) {
     if (_down == null) return;
-    if (!_panning && (e.localPosition - _down!).distance > 4 && _buttons == kPrimaryButton) {
+    final moved = (e.localPosition - _down!).distance > 4;
+    if (_dragJoint != null && _buttons == kPrimaryButton) {
+      if (moved || _dragPos != null) _dragJointTo(e.localPosition);
+      return;
+    }
+    if (_segStart != null && _buttons == kPrimaryButton) {
+      if (moved || _segEnd != null) setState(() => _segEnd = _snapPoint(e.localPosition));
+      return;
+    }
+    if (!_panning && moved && _buttons == kPrimaryButton) {
       _panning = true; // ЛКМ + перетаскивание – двигаем лист
     }
     if (_panning) {
@@ -278,6 +383,24 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
     final down = _down;
     _down = null;
     _panning = false;
+    // конец перетаскивания стыка / рисования отрезка
+    final dj = _dragJoint, dt = _dragT;
+    if (dj != null && dt != null) {
+      setState(() {
+        _dragJoint = null;
+        _dragPos = _dragT = null;
+      });
+      if ((dt - dj.t).abs() > 0.01) widget.onMoveJoint!(dj, dt);
+      return;
+    }
+    _dragJoint = null;
+    final a = _segStart, b = _segEnd;
+    if (a != null && b != null) {
+      setState(() => _segStart = _segEnd = null);
+      if ((a.$2 - b.$2).distance > 1) widget.onAddSegment!(a.$1, b.$1);
+      return;
+    }
+    _segStart = _segEnd = null;
     if (wasPan || down == null) return;
     if (_buttons == kSecondaryButton) {
       final h = _hitTest(e.localPosition);
@@ -288,6 +411,12 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
       return;
     }
     if (_buttons != kPrimaryButton) return;
+    if (widget.tool == Tool.track) {
+      final h = _trackHit(e.localPosition);
+      widget.onSelect(h);
+      if (h is NodeHit && h.n.isEnd) widget.onNodeMenu?.call(e.position, h.n);
+      return;
+    }
     if (widget.tool == Tool.joint) {
       final h = _hitTest(e.localPosition, edges: true);
       if (h is EdgeHit) widget.onAddJoint(h);
@@ -298,7 +427,9 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
   }
 
   void _onHover(PointerHoverEvent e) {
-    final h = _hitTest(e.localPosition, edges: widget.tool == Tool.joint);
+    final h = widget.tool == Tool.track
+        ? _trackHit(e.localPosition)
+        : _hitTest(e.localPosition, edges: widget.tool == Tool.joint);
     final s = widget.scene;
     final ord = s == null ? null : _toModel(e.localPosition).dx - s.originX;
     widget.onHover(h, ord);
@@ -306,6 +437,7 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
       (JointHit a, JointHit b) => a.j.id == b.j.id,
       (SignalHit a, SignalHit b) => a.s.id == b.s.id,
       (SectionHit a, SectionHit b) => a.sec.id == b.sec.id,
+      (NodeHit a, NodeHit b) => a.n.id == b.n.id,
       (EdgeHit a, EdgeHit b) => a.e.id == b.e.id && (a.at - b.at).distance < 0.2,
       (null, null) => true,
       _ => false,
@@ -315,10 +447,13 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
 
   MouseCursor get _cursor {
     if (_panning) return SystemMouseCursors.grabbing;
+    if (_dragJoint != null && _dragPos != null) return SystemMouseCursors.resizeLeftRight;
+    if (widget.tool == Tool.track) return _hover == null ? SystemMouseCursors.precise : SystemMouseCursors.click;
     if (widget.tool == Tool.joint) {
       return _hover is EdgeHit ? SystemMouseCursors.precise : SystemMouseCursors.basic;
     }
-    return _hover is JointHit || _hover is SignalHit || _hover is SectionHit
+    if (_hover is JointHit) return SystemMouseCursors.grab;
+    return _hover is SignalHit || _hover is SectionHit || _hover is NodeHit
         ? SystemMouseCursors.click
         : SystemMouseCursors.basic;
   }
@@ -370,6 +505,9 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
                   selected: widget.selected,
                   tool: widget.tool,
                   tok: tok,
+                  dragPos: _dragPos,
+                  segA: _segStart?.$2,
+                  segB: _segEnd?.$2,
                 ),
               ),
             ),
@@ -465,6 +603,7 @@ class _Painter extends CustomPainter {
   final Hit? hover, selected;
   final Tool tool;
   final Tok tok;
+  final Offset? dragPos, segA, segB;
 
   _Painter({
     required this.scene,
@@ -477,6 +616,9 @@ class _Painter extends CustomPainter {
     required this.selected,
     required this.tool,
     required this.tok,
+    this.dragPos,
+    this.segA,
+    this.segB,
   });
 
   Offset S(Offset m) => m * k + o;
@@ -502,13 +644,59 @@ class _Painter extends CustomPainter {
     if (s != null) _drawSheet(canvas, size, s);
     if (dark) canvas.restore();
     if (s == null) return;
+    if (tool == Tool.track) _ends(canvas, s);
     _mark(canvas, hover, hovered: true);
     _mark(canvas, selected, hovered: false);
+    _preview(canvas);
+  }
+
+  /// Инструмент «Пути»: концы путей и стрелки – видно, что можно править.
+  void _ends(Canvas canvas, Scene s) {
+    for (final n in s.nodes) {
+      final c = S(n.pos);
+      if (n.isSwitch) {
+        canvas.drawCircle(c, 3, Paint()..color = tok.muted);
+        continue;
+      }
+      if (!n.isEnd) continue;
+      final col = switch (n.mark) {
+        'peregon' => const Color(0xFF2F8F4E),
+        'pp' => const Color(0xFFB7791F),
+        _ => tok.accent,
+      };
+      canvas.drawRect(Rect.fromCenter(center: c, width: 8, height: 8), Paint()..color = col);
+    }
+  }
+
+  /// Перетаскиваемый стык и новый отрезок.
+  void _preview(Canvas canvas) {
+    final p = Paint()
+      ..color = tok.accent
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+    if (dragPos != null) {
+      final c = S(dragPos!);
+      canvas.drawCircle(c, math.max(7.0, 3.6 * k), Paint()..color = tok.accentSoft);
+      canvas.drawCircle(c, math.max(7.0, 3.6 * k), p);
+      canvas.drawLine(c.translate(0, -math.max(6.0, 2.0 * k)), c.translate(0, math.max(6.0, 2.0 * k)), p);
+    }
+    if (segA != null && segB != null) {
+      final a = S(segA!), b = S(segB!);
+      final dir = b - a;
+      final len = dir.distance;
+      if (len > 0) {
+        final u = dir / len;
+        for (double d = 0; d < len; d += 10) {
+          canvas.drawLine(a + u * d, a + u * math.min(d + 6, len), p);
+        }
+      }
+      canvas.drawCircle(a, 4, Paint()..color = tok.accent);
+      canvas.drawCircle(b, 4, Paint()..color = tok.accent);
+    }
   }
 
   /// Надписи с картинки, чертёж, линия склейки листов.
   void _drawSheet(Canvas canvas, Size size, Scene s) {
-
     canvas.save();
     canvas.translate(o.dx, o.dy);
     canvas.scale(k);
@@ -563,6 +751,19 @@ class _Painter extends CustomPainter {
         final r = Rect.fromPoints(S(sg.box.topLeft), S(sg.box.bottomRight)).inflate(4);
         if (!hovered) canvas.drawRect(r, Paint()..color = tok.accentSoft);
         canvas.drawRect(r, stroke);
+      case NodeHit(:final n):
+        final c = S(n.pos);
+        if (!hovered) canvas.drawCircle(c, 9, Paint()..color = tok.accentSoft);
+        canvas.drawCircle(c, 9, stroke);
+      case EdgeHit(:final e) when tool == Tool.track:
+        // весь отрезок «от стрелки до стрелки»
+        final p = Paint()
+          ..color = tok.accent.withValues(alpha: hovered ? 0.3 : 0.55)
+          ..strokeWidth = math.max(5.0, 2.2 * k)
+          ..strokeCap = StrokeCap.round;
+        for (final f in scene!.edges) {
+          if (f.chain == e.chain) canvas.drawLine(S(f.a), S(f.b), p);
+        }
       case EdgeHit(:final at):
         if (tool != Tool.joint) return;
         final c = S(at);
@@ -625,5 +826,8 @@ class _Painter extends CustomPainter {
       old.selected != selected ||
       old.tool != tool ||
       old.tok != tok ||
+      old.dragPos != dragPos ||
+      old.segA != segA ||
+      old.segB != segB ||
       old.annots.length != annots.length;
 }

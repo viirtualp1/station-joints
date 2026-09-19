@@ -39,6 +39,7 @@ class Signal:
     group: str = ''      # буква пункта для маневровых (б, в, г)
     red: bool = False    # маневровый с красным (ограждает путь/тупик) вместо синего
     why: str = ''
+    manual: bool = False  # изменён или добавлен вручную
 
 
 def place_signals(st: Station):

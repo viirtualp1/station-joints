@@ -5,8 +5,8 @@
 
 Служебные: ping, sample, new_doc, close_doc. Команды документа (параметр doc – номер
 таба из new_doc): load, restore, relayout, scene, recompute, add_joint, remove_joint,
-toggle_negab, undo, redo, save_project, set_project, thumb, export_png, export_pdf,
-export_docx.
+toggle_negab, move_joint, edit_track, edit_signal, add_signal, reset_signal, explain,
+undo, redo, save_project, set_project, thumb, export_png, export_pdf, export_docx.
 Команды, меняющие схему, возвращают новую сцену (см. scene.py)."""
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ import sys
 import tempfile
 import traceback
 
+import edits
+import explain
 import project
 from graph import Graph, Joint
 from joints import (Station, check_entries, compute_sections, name_sections, place_joints,
@@ -30,7 +32,7 @@ from sheets import make_sheets, save_pdf
 from signals import place_signals
 from vedomost import save_docx
 
-VERSION = 4
+VERSION = 5
 HISTORY = 100                            # шагов отмены
 
 
@@ -56,6 +58,7 @@ class Session:
         self.path: str | None = None         # открытый файл: картинка или .stj
         self.project: str | None = None      # файл работы, если открыт/сохранён
         self.edited = False                  # есть ручные правки стыков
+        self.sops: list[dict] = []           # ручные правки светофоров (edits.py)
         # история для отмены/повтора: снимки стыков и настроек компоновки
         self.hist: list[dict] = []
         self.pos = 0
@@ -83,8 +86,10 @@ class Session:
     # --- отмена / повтор -----------------------------------------------------------
     def _snap(self, label: str) -> dict:
         st = self._need()
+        assert self.graph0 is not None
         return {'label': label, 'sheets': self.sheets, 'odd_right': st.odd_right,
-                'edited': self.edited, 'joints': project.joints_to_json(st.joints)}
+                'edited': self.edited, 'joints': project.joints_to_json(st.joints),
+                'graph': project.graph_to_json(self.graph0), 'sops': copy.deepcopy(self.sops)}
 
     def _reset_history(self):
         self.hist, self.pos = [self._snap('')], 0
@@ -102,6 +107,8 @@ class Session:
 
     def _restore(self, snap: dict):
         self.sheets, self.odd_right, self.edited = snap['sheets'], snap['odd_right'], snap['edited']
+        self.graph0 = project.graph_from_json(snap['graph'])
+        self.sops = copy.deepcopy(snap['sops'])
         self._build(project.joints_from_json(snap['joints']))
 
     def undo(self):
@@ -138,6 +145,8 @@ class Session:
         if joints and all(j.edge in self.st.g.edges for j in joints):
             self.st.joints = joints
             self._refresh()
+        elif self.sops:
+            edits.apply_signal_ops(self.st, self.sops)
 
     def _refresh(self):
         st = self._need()
@@ -145,6 +154,15 @@ class Session:
         name_sections(st)
         check_entries(st)
         place_signals(st)                    # светофоры стоят на стыках – пересчитать
+        edits.apply_signal_ops(st, self.sops)
+
+    def _joint_edits(self) -> list[dict]:
+        """Ручные правки стыков относительно расстановки по правилам (на этой компоновке)."""
+        if not self.edited:
+            return []
+        rules, _ = build_station(copy.deepcopy(self.graph0), [], sheet_fmt=self.sheets,
+                                 odd_right=self.odd_right)
+        return edits.diff_joints(rules, self._need())
 
     def _after_edit(self, label: str):
         self.edited = True
@@ -178,6 +196,7 @@ class Session:
         self.src_name = os.path.basename(path)
         self.src_image = path
         self.path, self.project, self.edited = path, None, False
+        self.sops = []
         self._build()
         self._reset_history()
         return self._with_source()
@@ -190,6 +209,7 @@ class Session:
         self.sheets = s.get('sheets')
         if s.get('odd_right') is not None:
             self.odd_right = bool(s['odd_right'])
+        self.sops = list(s.get('signals') or [])
         # картинка-исходник – во временный файл, чтобы интерфейс мог её показать
         h = hashlib.sha1(self.src).hexdigest()[:16]
         ext = os.path.splitext(self.src_name)[1] or '.png'
@@ -215,14 +235,20 @@ class Session:
 
     def relayout(self, sheets='keep', odd_right: bool | None = None):
         """Перекомпоновать без повторного распознавания (формат листов, направление).
-        Стыки расставляются по правилам заново – ручные правки сбрасываются."""
+        Ручные правки стыков переносятся по их месту на пути."""
         if self.graph0 is None:
             raise ValueError('схема не загружена')
+        ops = self._joint_edits()
         self._settings(sheets, odd_right, None)
-        self.edited = False
         self._build()
+        if ops:
+            edits.apply_joint_ops(self._need(), ops)
+            self._refresh()
+        self.edited = bool(ops)
         self._commit('перекомпоновка')
-        return self._with_source()
+        res = self._with_source()
+        res['kept'] = len(ops)
+        return res
 
     def scene_cmd(self, layers: dict | None = None):
         if layers:
@@ -235,7 +261,8 @@ class Session:
         st = self._need()
         place_joints(st)
         snap_joints(st)
-        place_signals(st)
+        self.sops = []                       # и светофоры – по правилам
+        self._refresh()
         self.edited = False
         self._commit('расстановка заново')
         return self._with_source()
@@ -261,6 +288,97 @@ class Session:
         j.fixed = True
         return self._after_edit('габарит стыка')
 
+    def move_joint(self, joint: int, t: float):
+        """Перенести стык вдоль его отрезка (t – расстояние от начала отрезка, мм)."""
+        st = self._need()
+        j = st.joints[int(joint)]
+        L = st.g.length(st.g.edges[j.edge])
+        j.t = min(max(float(t), 0.5), L - 0.5)
+        if not j.fixed:
+            update_negab(st, [j])
+        return self._after_edit('перенос стыка')
+
+    def edit_track(self, op: str, edge: int | None = None, node: int | None = None,
+                   mark: str | None = None, a: dict | None = None, b: dict | None = None):
+        """Правка распознанной схемы: delete_edge / add_edge / set_end. Схема
+        перекомпоновывается, ручные правки стыков переносятся по месту."""
+        st = self._need()
+        assert self.graph0 is not None
+        ops = self._joint_edits()
+        backup = project.graph_to_json(self.graph0)
+        try:
+            if op == 'delete_edge':
+                edits.delete_edge(self.graph0, int(edge or 0))
+                label = 'удаление отрезка'
+            elif op == 'add_edge':
+                edits.add_edge(self.graph0, st, a or {}, b or {})
+                label = 'новый отрезок'
+            elif op == 'set_end':
+                edits.set_end(self.graph0, int(node or 0), mark)
+                label = 'тип конца пути'
+            else:
+                raise ValueError(f'неизвестная правка: {op}')
+            self._build()
+        except Exception as ex:              # правка ломает схему – откат
+            self.graph0 = project.graph_from_json(backup)
+            self._restore(self.hist[self.pos])
+            raise ValueError(f'не получилось: {ex}') from ex
+        if ops:
+            edits.apply_joint_ops(self._need(), ops)
+            self._refresh()
+        self.edited = True
+        self._commit(label)
+        return self._with_source()
+
+    def _signal(self, signal: int):
+        st = self._need()
+        s = st.signals[int(signal)]
+        return st, s, edits.sig_key(st, s.joint, s.toward)
+
+    def edit_signal(self, signal: int, name: str | None = None, kind: str | None = None,
+                    delete: bool = False):
+        """Переименовать, сменить тип или удалить светофор."""
+        _, _, key = self._signal(signal)
+        change = {}
+        if name is not None and name.strip():
+            change['name'] = name.strip()
+        if kind is not None:
+            change['kind'] = kind
+        if delete:
+            change['deleted'] = True
+        edits.edit_signal(self.sops, key, **change)
+        return self._after_edit('удаление светофора' if delete else 'правка светофора')
+
+    def add_signal(self, joint: int, toward: int, name: str = 'М', kind: str = 'man_dwarf'):
+        """Новый светофор у стыка, разрешающий движение в сторону узла toward."""
+        st = self._need()
+        j = st.joints[int(joint)]
+        e = st.g.edges[j.edge]
+        if int(toward) not in (e.a, e.b):
+            raise ValueError('направление – к одному из концов отрезка')
+        edits.edit_signal(self.sops, edits.sig_key(st, j, int(toward)), added=True,
+                          deleted=False, name=name, kind=kind)
+        return self._after_edit('новый светофор')
+
+    def reset_signal(self, signal: int):
+        """Вернуть светофор к автоматической расстановке."""
+        _, _, key = self._signal(signal)
+        edits.reset_signal(self.sops, key)
+        return self._after_edit('светофор – как по правилам')
+
+    def explain(self, what: str, target: int | str):
+        """Объяснение объекта (target – номер или имя участка; «id» занято протоколом)."""
+        st = self._need()
+        if what == 'joint':
+            return explain.joint(st, int(target))
+        if what == 'signal':
+            return explain.signal(st, int(target))
+        if what == 'section':
+            return explain.section(st, str(target))
+        if what == 'node':
+            return explain.node(st, int(target))
+        raise ValueError(f'нечего объяснять: {what}')
+
     def _preview(self):
         img, _ = render(self._need(), (960, 420), annots=self.annots, show_grid=False)
         return img.convert('RGB')
@@ -273,7 +391,8 @@ class Session:
             os.makedirs(os.path.dirname(path), exist_ok=True)
         project.save(path, graph=self.graph0, annots=self.annots0, info=self.info,
                      source=self.src, source_name=self.src_name,
-                     settings={'sheets': self.sheets, 'odd_right': st.odd_right},
+                     settings={'sheets': self.sheets, 'odd_right': st.odd_right,
+                               'signals': self.sops},
                      joints=st.joints, preview=None if autosave else self._preview(),
                      edited=self.edited)
         if not autosave:
@@ -322,6 +441,9 @@ DOC_COMMANDS = {'load': 'load', 'relayout': 'relayout', 'scene': 'scene_cmd',
                 'recompute': 'recompute', 'add_joint': 'add_joint',
                 'remove_joint': 'remove_joint', 'toggle_negab': 'toggle_negab',
                 'undo': 'undo', 'redo': 'redo', 'restore': 'restore',
+                'move_joint': 'move_joint', 'edit_track': 'edit_track',
+                'edit_signal': 'edit_signal', 'add_signal': 'add_signal',
+                'reset_signal': 'reset_signal', 'explain': 'explain',
                 'save_project': 'save_project', 'set_project': 'set_project', 'thumb': 'thumb', 'export_png': 'export_png',
                 'export_pdf': 'export_pdf', 'export_docx': 'export_docx'}
 

@@ -124,7 +124,7 @@ def _classify_ends(st: Station):
     x0, _, x1, _ = g.bbox()
     span = x1 - x0
     for n in g.nodes.values():
-        if g.degree(n.id) != 1 or n.mark in ('tupik', 'pp'):
+        if g.degree(n.id) != 1 or n.mark in ('tupik', 'pp') or n.fixed_mark:
             continue
         e = g.incident(n.id)[0]
         at_edge = n.x - x0 < span * 0.04 or x1 - n.x < span * 0.04
