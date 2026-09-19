@@ -3,8 +3,9 @@
 Запрос:  {"id": 1, "cmd": "load", "path": "...", "sheets": "A3"}
 Ответ:   {"id": 1, "ok": true, "result": {...}}  |  {"id": 1, "ok": false, "error": "..."}
 
-Команды: ping, sample, load, restore, relayout, scene, recompute, add_joint, remove_joint,
-         toggle_negab, undo, redo, save_project, thumb, export_png, export_pdf, export_docx.
+Служебные: ping, sample, new_doc, close_doc. Команды документа (параметр doc – номер
+таба из new_doc): load, restore, relayout, scene, recompute, add_joint, remove_joint,
+toggle_negab, undo, redo, save_project, thumb, export_png, export_pdf, export_docx.
 Команды, меняющие схему, возвращают новую сцену (см. scene.py)."""
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ from sheets import make_sheets, save_pdf
 from signals import place_signals
 from vedomost import save_docx
 
-VERSION = 3
+VERSION = 4
 HISTORY = 100                            # шагов отмены
 
 
@@ -309,6 +310,45 @@ class Session:
         return {'path': path}
 
 
+# команды документа (всё, кроме служебных) – у каждого открытого таба своя сессия
+DOC_COMMANDS = {'load': 'load', 'relayout': 'relayout', 'scene': 'scene_cmd',
+                'recompute': 'recompute', 'add_joint': 'add_joint',
+                'remove_joint': 'remove_joint', 'toggle_negab': 'toggle_negab',
+                'undo': 'undo', 'redo': 'redo', 'restore': 'restore',
+                'save_project': 'save_project', 'thumb': 'thumb', 'export_png': 'export_png',
+                'export_pdf': 'export_pdf', 'export_docx': 'export_docx'}
+
+
+class Server:
+    """Несколько открытых схем (табы): doc -> Session. Без doc – документ 0
+    (совместимость с однодокументным клиентом)."""
+
+    def __init__(self):
+        self.docs: dict[int, Session] = {}
+        self.next = 1
+
+    def handle(self, cmd: str, req: dict):
+        if cmd == 'ping':
+            return {'version': VERSION}
+        if cmd == 'sample':
+            return Session().sample()
+        if cmd == 'new_doc':
+            doc = self.next
+            self.next += 1
+            self.docs[doc] = Session()
+            return {'doc': doc}
+        if cmd == 'close_doc':
+            self.docs.pop(int(req.get('doc', 0)), None)
+            return {'docs': len(self.docs)}
+        if cmd not in DOC_COMMANDS:
+            raise ValueError(f'неизвестная команда: {cmd}')
+        doc = int(req.pop('doc', 0))
+        ses = self.docs.setdefault(doc, Session()) if doc == 0 else self.docs.get(doc)
+        if ses is None:
+            raise ValueError(f'документ {doc} закрыт')
+        return getattr(ses, DOC_COMMANDS[cmd])(**req)
+
+
 def main():
     out = sys.stdout
     if hasattr(out, 'reconfigure'):
@@ -316,14 +356,7 @@ def main():
     if hasattr(sys.stdin, 'reconfigure'):
         sys.stdin.reconfigure(encoding='utf-8')      # type: ignore[union-attr]
     sys.stdout = sys.stderr                          # случайные print – не в протокол
-    ses = Session()
-    handlers = {'ping': ses.ping, 'sample': ses.sample, 'load': ses.load,
-                'relayout': ses.relayout, 'scene': ses.scene_cmd, 'recompute': ses.recompute,
-                'add_joint': ses.add_joint, 'remove_joint': ses.remove_joint,
-                'toggle_negab': ses.toggle_negab, 'undo': ses.undo, 'redo': ses.redo,
-                'restore': ses.restore, 'save_project': ses.save_project,
-                'thumb': ses.thumb, 'export_png': ses.export_png,
-                'export_pdf': ses.export_pdf, 'export_docx': ses.export_docx}
+    srv = Server()
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -333,9 +366,7 @@ def main():
             req = json.loads(line)
             rid = req.pop('id', None)
             cmd = req.pop('cmd', None)
-            if cmd not in handlers:
-                raise ValueError(f'неизвестная команда: {cmd}')
-            resp = {'id': rid, 'ok': True, 'result': handlers[cmd](**req)}
+            resp = {'id': rid, 'ok': True, 'result': srv.handle(cmd, req)}
         except Exception as ex:                      # ошибка команды – ответ, не падение
             traceback.print_exc(file=sys.stderr)
             resp = {'id': rid, 'ok': False, 'error': str(ex)}

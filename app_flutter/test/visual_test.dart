@@ -136,7 +136,26 @@ void main() {
         const StandardMethodCodec().encodeMethodCall(MethodCall('open', stj)),
         (_) {},
       ));
-      await _waitFor(t, find.textContaining('.stj'));
+      // уже открыт – не дублируется, просто становится активным
+      await _waitFor(t, find.text('Этот файл уже открыт'));
+      expect(find.text('var91.stj'), findsWidgets);
+      expect(find.text('var96_photo.jpg'), findsOneWidget);
+      await _shot(t, '7b_tabs');
+      // Ctrl+Tab – следующий таб, Ctrl+W – закрыть
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.tab);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await t.pump(const Duration(milliseconds: 200));
+      await _waitFor(t, find.text('var96_photo'));
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.keyW);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      for (var i = 0; i < 20 && find.text('var96_photo.jpg').evaluate().isNotEmpty; i++) {
+        await t.runAsync(() => Future.delayed(const Duration(milliseconds: 100)));
+        await t.pump();
+      }
+      expect(find.text('var96_photo.jpg'), findsNothing);
+      expect(find.text('var91.stj'), findsWidgets);
       await t.runAsync(() => Future.delayed(const Duration(seconds: 2))); // миниатюра
       await _shot(t, '7_project');
       await t.pumpWidget(const SizedBox());

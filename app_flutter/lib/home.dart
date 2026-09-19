@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
+import 'package:flutter/gestures.dart' show kMiddleMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -34,25 +35,45 @@ class Home extends StatefulWidget {
   State<Home> createState() => _HomeState();
 }
 
+/// Открытая схема (таб): своя сессия в бэкенде, своя камера и выделение.
+class _Doc {
+  final int id; // номер документа в бэкенде
+  Scene? scene;
+  String? path; // открытый файл: картинка или .stj
+  bool dirty = false; // есть несохранённые изменения
+  Hit? selected;
+  bool layersStale = false; // слои меняли, пока таб был неактивен
+  final cam = SchemeController();
+  _Doc(this.id);
+}
+
 class _HomeState extends State<Home> {
   final _backend = Backend();
-  final _cam = SchemeController();
   final _focus = FocusNode();
 
   bool _ready = false;
   String? _fatal;
   bool _busy = false;
   String _busyText = '';
-  Scene? _scene;
-  String? _path;
+
+  final _docs = <_Doc>[];
+  _Doc? _doc; // активный таб
+  final _noCam = SchemeController(); // холст без схемы
+
+  Scene? get _scene => _doc?.scene;
+  String? get _path => _doc?.path;
+  set _path(String? v) => _doc?.path = v;
+  bool get _dirty => _doc?.dirty ?? false;
+  set _dirty(bool v) => _doc?.dirty = v;
+  Hit? get _selected => _doc?.selected;
+  set _selected(Hit? v) => _doc?.selected = v;
+  SchemeController get _cam => _doc?.cam ?? _noCam;
 
   Tool _tool = Tool.select;
-  Hit? _selected;
   Hit? _hover;
   double? _ordinate;
   int _tab = 0; // 0 свойства, 1 светофоры, 2 участки
   List<RecentItem> _recent = Recent.load();
-  bool _dirty = false; // есть несохранённые изменения
   bool _left = true, _right = true;
 
   final _layers = <String, bool>{
@@ -81,7 +102,6 @@ class _HomeState extends State<Home> {
   @override
   void initState() {
     super.initState();
-    _cam.addListener(() => setState(() {}));
     // закрытие окна: спросить про несохранённые правки
     _life = AppLifecycleListener(onExitRequested: _onExitRequested);
     _autosaveTimer = Timer.periodic(const Duration(seconds: 30), (_) => _autosave());
@@ -98,16 +118,106 @@ class _HomeState extends State<Home> {
       _pendingOpen = path;
       return;
     }
-    if (_path != null && _path!.toLowerCase() == path.toLowerCase()) {
-      _say('Этот файл уже открыт');
-      return;
-    }
     if (!File(path).existsSync()) {
       _say('Файл не найден: $path', error: true);
       return;
     }
-    if (!await _confirmDiscard()) return;
     await _load(path);
+  }
+
+  // ------------------------------------------------------------------ табы
+  /// Команда бэкенду для документа (по умолчанию – активного таба).
+  Future<Map<String, dynamic>> _call(String cmd, [Map<String, dynamic>? args, _Doc? doc]) =>
+      _backend.call(cmd, {...?args, 'doc': (doc ?? _doc)!.id});
+
+  Future<_Doc> _newDoc() async {
+    final r = await _backend.call('new_doc');
+    final d = _Doc(r['doc'] as int);
+    d.cam.addListener(() {
+      if (mounted && identical(d, _doc)) setState(() {});
+    });
+    setState(() => _docs.add(d));
+    return d;
+  }
+
+  _Doc? _findOpen(String path) {
+    final key = path.toLowerCase();
+    for (final d in _docs) {
+      final src = d.scene?.source;
+      final paths = [d.path, src?['project'], src?['path']];
+      if (paths.any((p) => p is String && p.toLowerCase() == key)) return d;
+    }
+    return null;
+  }
+
+  Future<void> _activate(_Doc? d) async {
+    if (_busy && d != _doc) return; // пока идёт операция – не переключаемся
+    setState(() {
+      _doc = d;
+      _hover = null;
+      _ordinate = null;
+    });
+    if (d == null) return;
+    _syncSettings();
+    if (d.layersStale && d.scene != null) {
+      d.layersStale = false;
+      final lay = Map.of(_layers)..remove('grid');
+      _apply(await _call('scene', {'layers': lay}, d), keepSelection: true, doc: d);
+    }
+  }
+
+  void _cycleTab(int step) {
+    if (_docs.length < 2 || _doc == null) return;
+    final i = _docs.indexOf(_doc!);
+    _activate(_docs[(i + step) % _docs.length]);
+  }
+
+  /// Убрать таб (без вопросов): бэкенд забывает документ, активным становится сосед.
+  Future<void> _dropDoc(_Doc d, {_Doc? fallback}) async {
+    final i = _docs.indexOf(d);
+    if (i < 0) return;
+    _dropAutosave(d);
+    setState(() => _docs.removeAt(i));
+    try {
+      await _backend.call('close_doc', {'doc': d.id});
+    } catch (_) {}
+    if (identical(_doc, d)) {
+      final next = fallback != null && _docs.contains(fallback)
+          ? fallback
+          : (_docs.isEmpty ? null : _docs[i.clamp(0, _docs.length - 1)]);
+      await _activate(next);
+    }
+  }
+
+  /// Закрыть таб: при несохранённых правках – спросить.
+  Future<void> _closeTab(_Doc d) async {
+    if (_busy) return;
+    if (d.dirty) {
+      await _activate(d);
+      if (!await _confirmDiscard()) return;
+    }
+    await _dropDoc(d);
+  }
+
+  /// Спросить про все табы с несохранёнными правками (выход, обновление).
+  Future<bool> _confirmAll() async {
+    for (final d in List.of(_docs)) {
+      if (!d.dirty) continue;
+      await _activate(d);
+      if (!await _confirmDiscard()) return false;
+    }
+    return true;
+  }
+
+  String _baseOf(_Doc? d) {
+    final src = d?.scene?.source;
+    final n =
+        (src?['project'] as String?)?.split(Platform.pathSeparator).last ??
+        src?['name'] as String? ??
+        d?.path?.split(Platform.pathSeparator).last ??
+        'схема';
+    final i = n.lastIndexOf('.');
+    return i > 0 ? n.substring(0, i) : n;
   }
 
   Future<void> _start() async {
@@ -138,7 +248,7 @@ class _HomeState extends State<Home> {
   }
 
   Future<AppExitResponse> _onExitRequested() async {
-    if (!await _confirmDiscard()) return AppExitResponse.cancel;
+    if (!await _confirmAll()) return AppExitResponse.cancel;
     _clearAutosave();
     return AppExitResponse.exit;
   }
@@ -146,24 +256,56 @@ class _HomeState extends State<Home> {
   // ------------------------------------------------------------------ автосохранение
   static String get _autoDir => '${Recent.dir}${Platform.pathSeparator}autosave';
   static File get _autoMeta => File('$_autoDir${Platform.pathSeparator}autosave.json');
-  static String get _autoFile => '$_autoDir${Platform.pathSeparator}autosave.stj';
+  static String _autoFileFor(_Doc d) => '$_autoDir${Platform.pathSeparator}doc_${d.id}.stj';
   bool _autosaving = false;
 
-  /// Раз в 30 с, если есть несохранённые правки, – резервная копия работы.
+  List<Map<String, dynamic>> _readAutoMeta() {
+    try {
+      final j = jsonDecode(_autoMeta.readAsStringSync());
+      final list = j is List ? j : [j]; // старый формат – одна запись
+      return [for (final e in list) (e as Map).cast<String, dynamic>()];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  void _writeAutoMeta(List<Map<String, dynamic>> entries) {
+    try {
+      Directory(_autoDir).createSync(recursive: true);
+      if (entries.isEmpty) {
+        if (_autoMeta.existsSync()) _autoMeta.deleteSync();
+      } else {
+        _autoMeta.writeAsStringSync(jsonEncode(entries));
+      }
+      // копии, которых нет в списке, – больше не нужны
+      final keep = {for (final e in entries) '${e['file']}'.toLowerCase()};
+      for (final f in Directory(_autoDir).listSync().whereType<File>()) {
+        if (f.path.toLowerCase().endsWith('.stj') && !keep.contains(f.path.toLowerCase())) f.deleteSync();
+      }
+    } catch (_) {}
+  }
+
+  /// Раз в 30 с – резервные копии всех табов с несохранёнными правками.
   Future<void> _autosave() async {
-    if (!_dirty || _scene == null || _busy || _autosaving) return;
+    if (_busy || _autosaving) return;
+    if (!_docs.any((d) => d.dirty) && !_autoMeta.existsSync()) return;
     _autosaving = true;
     try {
-      await _backend.call('save_project', {'path': _autoFile, 'autosave': true});
-      final src = _scene?.source ?? const {};
-      _autoMeta.writeAsStringSync(
-        jsonEncode({
+      final entries = <Map<String, dynamic>>[];
+      for (final d in List.of(_docs)) {
+        if (!d.dirty || d.scene == null) continue;
+        final file = _autoFileFor(d);
+        await _call('save_project', {'path': file, 'autosave': true}, d);
+        final src = d.scene?.source ?? const {};
+        entries.add({
+          'file': file,
           'project': src['project'],
-          'origin': src['project'] == null ? _path : null,
-          'name': _base,
+          'origin': src['project'] == null ? d.path : null,
+          'name': _baseOf(d),
           'saved': DateTime.now().toIso8601String(),
-        }),
-      );
+        });
+      }
+      _writeAutoMeta(entries);
     } catch (_) {
       // резервная копия – не критично
     } finally {
@@ -171,26 +313,30 @@ class _HomeState extends State<Home> {
     }
   }
 
-  void _clearAutosave() {
-    for (final f in [_autoMeta, File(_autoFile)]) {
-      try {
-        if (f.existsSync()) f.deleteSync();
-      } catch (_) {}
-    }
+  /// Копия этого таба больше не нужна (сохранён, закрыт, правки отброшены).
+  void _dropAutosave(_Doc d) {
+    final file = _autoFileFor(d).toLowerCase();
+    _writeAutoMeta([
+      for (final e in _readAutoMeta())
+        if ('${e['file']}'.toLowerCase() != file) e,
+    ]);
   }
 
-  /// При запуске: осталась резервная копия (программа закрылась, не сохранив правки)?
+  void _clearAutosave() => _writeAutoMeta([]);
+
+  /// При запуске: остались резервные копии (программа закрылась, не сохранив правки)?
   Future<bool> _offerRestore() async {
-    Map<String, dynamic> meta;
-    try {
-      if (!_autoMeta.existsSync() || !File(_autoFile).existsSync()) return false;
-      meta = (jsonDecode(_autoMeta.readAsStringSync()) as Map).cast<String, dynamic>();
-    } catch (_) {
+    final entries = [
+      for (final e in _readAutoMeta())
+        if (e['file'] is String && File(e['file'] as String).existsSync()) e,
+    ];
+    if (entries.isEmpty) {
       _clearAutosave();
       return false;
     }
     if (!mounted) return false;
-    final when = DateTime.tryParse('${meta['saved']}');
+    final names = entries.map((e) => '«${e['name']}»').join(', ');
+    final times = entries.map((e) => DateTime.tryParse('${e['saved']}')).whereType<DateTime>().toList()..sort();
     final t = Tok.of(context);
     final v = await showDialog<bool>(
       context: context,
@@ -198,14 +344,22 @@ class _HomeState extends State<Home> {
       builder: (c) => AlertDialog(
         shape: RoundedRectangleBorder(side: BorderSide(color: t.line)),
         backgroundColor: t.panel,
-        title: Text('Восстановить работу?', style: TextStyle(fontSize: 15, color: t.text)),
+        title: Text(
+          entries.length == 1 ? 'Восстановить работу?' : 'Восстановить работы (${entries.length})?',
+          style: TextStyle(fontSize: 15, color: t.text),
+        ),
         content: Text(
-          'Программа закрылась, не сохранив правки в «${meta['name']}».'
-          '${when == null ? '' : ' Резервная копия: ${_hhmm(when)}.'}',
+          'Программа закрылась, не сохранив правки в $names.'
+          '${times.isEmpty ? '' : ' Резервная копия: ${_hhmm(times.last)}.'}',
           style: TextStyle(fontSize: 13, color: t.muted),
         ),
         actions: [
-          _TextBtn('Удалить копию', null, () => Navigator.pop(c, false), outlined: true),
+          _TextBtn(
+            entries.length == 1 ? 'Удалить копию' : 'Удалить копии',
+            null,
+            () => Navigator.pop(c, false),
+            outlined: true,
+          ),
           _PrimaryBtn('Восстановить', () => Navigator.pop(c, true)),
         ],
       ),
@@ -214,17 +368,26 @@ class _HomeState extends State<Home> {
       _clearAutosave();
       return false;
     }
-    final res = await _run(
-      'Восстановление…',
-      () => _backend.call('restore', {'path': _autoFile, 'project_path': meta['project'], 'origin': meta['origin']}),
-    );
-    if (res == null) return false;
-    _path = (meta['project'] ?? meta['origin']) as String?;
-    _apply(res);
-    _syncSettings();
-    setState(() => _dirty = true);
-    _say('Работа восстановлена – не забудьте сохранить (Ctrl+S)');
-    return true;
+    var any = false;
+    for (final e in entries) {
+      final d = await _newDoc();
+      await _activate(d);
+      final res = await _run(
+        'Восстановление…',
+        () => _call('restore', {'path': e['file'], 'project_path': e['project'], 'origin': e['origin']}, d),
+      );
+      if (res == null) {
+        await _dropDoc(d);
+        continue;
+      }
+      d.path = (e['project'] ?? e['origin']) as String?;
+      _apply(res, doc: d);
+      _syncSettings();
+      setState(() => d.dirty = true);
+      any = true;
+    }
+    if (any) _say('Работа восстановлена – не забудьте сохранить (Ctrl+S)');
+    return any;
   }
 
   String _hhmm(DateTime d) =>
@@ -280,7 +443,7 @@ class _HomeState extends State<Home> {
 
   /// Скачать установщик, запустить его и закрыть программу (установщик заменит файлы).
   Future<void> _install(Release r) async {
-    if (!await _confirmDiscard()) return;
+    if (!await _confirmAll()) return;
     final path = await _run(
       'Загрузка обновления…',
       () => downloadInstaller(r, (p) {
@@ -318,18 +481,18 @@ class _HomeState extends State<Home> {
     });
   }
 
-  void _apply(Map<String, dynamic>? res, {bool keepSelection = false}) {
-    if (res == null) return;
+  void _apply(Map<String, dynamic>? res, {bool keepSelection = false, _Doc? doc}) {
+    final d = doc ?? _doc;
+    if (res == null || d == null) return;
     setState(() {
       // сведения об исходнике приходят только при загрузке – потом переносим старые
-      final src = (res['source'] as Map?)?.cast<String, dynamic>() ?? _scene?.source;
-      _scene = Scene.fromJson(res, source: src);
-      if (!keepSelection) _selected = null;
+      final src = (res['source'] as Map?)?.cast<String, dynamic>() ?? d.scene?.source;
+      d.scene = Scene.fromJson(res, source: src);
+      if (!keepSelection) d.selected = null;
     });
   }
 
   Future<void> _open() async {
-    if (!await _confirmDiscard()) return;
     final f = pickOpen();
     if (f != null) await _load(f);
   }
@@ -340,7 +503,6 @@ class _HomeState extends State<Home> {
       _say('Файл не найден: ${it.name}', error: true);
       return;
     }
-    if (!await _confirmDiscard()) return;
     await _load(it.path);
   }
 
@@ -363,7 +525,7 @@ class _HomeState extends State<Home> {
       ),
     );
     if (v == 'discard') {
-      _clearAutosave();
+      if (_doc != null) _dropAutosave(_doc!);
       return true;
     }
     if (v == 'save') return await _save();
@@ -382,24 +544,24 @@ class _HomeState extends State<Home> {
       path = picked.toLowerCase().endsWith('.stj') ? picked : '$picked.stj';
     }
     final target = path;
-    final r = await _run('Сохранение…', () => _backend.call('save_project', {'path': target}));
+    final r = await _run('Сохранение…', () => _call('save_project', {'path': target}));
     if (r == null) return false;
     setState(() {
       _scene!.source = (r['source'] as Map).cast<String, dynamic>();
       _path = target;
       _dirty = false;
     });
-    _clearAutosave();
+    _dropAutosave(_doc!);
     await _remember(target, project: true, replaces: old == null ? src['path'] as String? : null);
     _say('Работа сохранена: ${target.split(Platform.pathSeparator).last}');
     return true;
   }
 
   /// В список недавних + миниатюра.
-  Future<void> _remember(String path, {required bool project, String? replaces}) async {
+  Future<void> _remember(String path, {required bool project, String? replaces, _Doc? doc}) async {
     final thumb = Recent.thumbFor(path);
     try {
-      await _backend.call('thumb', {'path': thumb});
+      await _call('thumb', {'path': thumb}, doc);
       await FileImage(File(thumb)).evict();
     } catch (_) {}
     if (!mounted) return;
@@ -413,25 +575,38 @@ class _HomeState extends State<Home> {
     await _load(r['path'] as String);
   }
 
+  /// Открыть файл в новом табе (уже открытый – просто показать).
   Future<void> _load(String path) async {
+    if (_busy) return;
+    final open = _findOpen(path);
+    if (open != null) {
+      await _activate(open);
+      if (_docs.length > 1) _say('Этот файл уже открыт');
+      return;
+    }
     final project = path.toLowerCase().endsWith('.stj');
+    final prev = _doc;
+    final d = await _newDoc();
+    d.path = path;
+    await _activate(d);
     final res = await _run(
       project ? 'Открываю работу…' : 'Распознаю схему…',
-      () => _backend.call('load', {
+      () => _call('load', {
         'path': path,
         // у работы свои настройки листа и направления – берём из файла
         if (!project) 'sheets': _twoSheets ? _fmt : null,
         if (!project) 'odd_right': _oddRight,
         'layers': _layers,
-      }),
+      }, d),
     );
-    if (res == null) return;
-    _path = path;
-    _apply(res);
+    if (res == null) {
+      await _dropDoc(d, fallback: prev);
+      return;
+    }
+    _apply(res, doc: d);
     _syncSettings();
-    setState(() => _dirty = false);
-    _clearAutosave();
-    await _remember(path, project: project);
+    setState(() => d.dirty = false);
+    await _remember(path, project: project, doc: d);
   }
 
   Future<void> _relayout() async {
@@ -439,7 +614,7 @@ class _HomeState extends State<Home> {
     final hadEdits = _scene?.source?['edited'] == true;
     final res = await _run(
       'Перекомпоновка…',
-      () => _backend.call('relayout', {'sheets': _twoSheets ? _fmt : null, 'odd_right': _oddRight}),
+      () => _call('relayout', {'sheets': _twoSheets ? _fmt : null, 'odd_right': _oddRight}),
     );
     _apply(res);
     if (res != null) setState(() => _dirty = true);
@@ -450,8 +625,11 @@ class _HomeState extends State<Home> {
     setState(() => _layers[k] = v);
     if (_scene == null) return;
     if (k == 'grid') return; // сетку рисует клиент
+    for (final d in _docs) {
+      if (!identical(d, _doc)) d.layersStale = true; // обновятся при переключении
+    }
     _apply(
-      await _backend.call('scene', {
+      await _call('scene', {
         'layers': {k: v},
       }),
       keepSelection: true,
@@ -460,7 +638,7 @@ class _HomeState extends State<Home> {
 
   Future<void> _undo() async {
     if (_scene?.undo == null || _busy) return;
-    final res = await _backend.call('undo');
+    final res = await _call('undo');
     _apply(res);
     _syncSettings();
     setState(() => _dirty = true);
@@ -469,7 +647,7 @@ class _HomeState extends State<Home> {
 
   Future<void> _redo() async {
     if (_scene?.redo == null || _busy) return;
-    final res = await _backend.call('redo');
+    final res = await _call('redo');
     _apply(res);
     _syncSettings();
     setState(() => _dirty = true);
@@ -478,25 +656,25 @@ class _HomeState extends State<Home> {
 
   Future<void> _recompute() async {
     if (_scene == null) return;
-    _apply(await _run('Расстановка…', () => _backend.call('recompute')));
+    _apply(await _run('Расстановка…', () => _call('recompute')));
     _dirty = true;
     _say('Стыки и светофоры расставлены заново');
   }
 
   Future<void> _addJoint(EdgeHit h) async {
-    _apply(await _backend.call('add_joint', {'edge': h.e.id, 't': h.t}));
+    _apply(await _call('add_joint', {'edge': h.e.id, 't': h.t}));
     _dirty = true;
     _say('Стык добавлен');
   }
 
   Future<void> _removeJoint(JointObj j) async {
-    _apply(await _backend.call('remove_joint', {'joint': j.id}));
+    _apply(await _call('remove_joint', {'joint': j.id}));
     _dirty = true;
     _say('Стык удалён');
   }
 
   Future<void> _toggleNegab(JointObj j) async {
-    final res = await _backend.call('toggle_negab', {'joint': j.id});
+    final res = await _call('toggle_negab', {'joint': j.id});
     _apply(res);
     _dirty = true;
     final nj = _scene!.joints.firstWhere((x) => x.id == j.id, orElse: () => j);
@@ -504,12 +682,7 @@ class _HomeState extends State<Home> {
     _say(nj.negab ? 'Стык негабаритный' : 'Стык габаритный');
   }
 
-  String get _base {
-    final src = _scene?.source;
-    final n = (src?['project'] as String?)?.split(Platform.pathSeparator).last ?? src?['name'] as String? ?? 'схема';
-    final i = n.lastIndexOf('.');
-    return i > 0 ? n.substring(0, i) : n;
-  }
+  String get _base => _baseOf(_doc);
 
   Future<void> _export(String kind) async {
     if (_scene == null) return;
@@ -522,7 +695,7 @@ class _HomeState extends State<Home> {
     if (picked == null) return;
     var path = picked;
     if (!path.toLowerCase().endsWith('.$ext')) path = '$path.$ext';
-    final r = await _run('Сохранение…', () => _backend.call(cmd, {'path': path, 'title': _base}));
+    final r = await _run('Сохранение…', () => _call(cmd, {'path': path, 'title': _base}));
     if (r != null) _say('Сохранено: ${path.split(Platform.pathSeparator).last}');
   }
 
@@ -542,7 +715,11 @@ class _HomeState extends State<Home> {
     final ctrl = HardwareKeyboard.instance.isControlPressed;
     final shift = HardwareKeyboard.instance.isShiftPressed;
     final k = e.logicalKey;
-    if (ctrl && k == LogicalKeyboardKey.keyO) {
+    if (ctrl && k == LogicalKeyboardKey.tab) {
+      _cycleTab(shift ? -1 : 1);
+    } else if (ctrl && k == LogicalKeyboardKey.keyW) {
+      if (_doc != null) _closeTab(_doc!);
+    } else if (ctrl && k == LogicalKeyboardKey.keyO) {
       if (_ready) _open();
     } else if (ctrl && k == LogicalKeyboardKey.keyS) {
       _save(as: shift);
@@ -594,6 +771,7 @@ class _HomeState extends State<Home> {
         body: Column(
           children: [
             _toolbar(t),
+            if (_docs.isNotEmpty) _tabBar(t),
             SizedBox(
               height: 2,
               child: _busy
@@ -697,6 +875,47 @@ class _HomeState extends State<Home> {
     );
   }
 
+  Widget _tabBar(Tok t) {
+    return Container(
+      height: 32,
+      decoration: BoxDecoration(
+        color: t.panel2,
+        border: Border(top: BorderSide(color: t.line)),
+      ),
+      child: Row(
+        children: [
+          Flexible(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final d in _docs)
+                    _DocTab(
+                      title: _tabTitle(d),
+                      tooltip: d.scene?.source?['project'] as String? ?? d.path ?? '',
+                      project: d.scene?.source?['project'] != null || (d.path?.toLowerCase().endsWith('.stj') ?? false),
+                      active: identical(d, _doc),
+                      dirty: d.dirty,
+                      loading: d.scene == null,
+                      onTap: () => _activate(d),
+                      onClose: () => _closeTab(d),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          _IconBtn(Icons.add, 'Открыть в новом табе (Ctrl+O)', _ready && !_busy ? _open : null, size: 32),
+        ],
+      ),
+    );
+  }
+
+  String _tabTitle(_Doc d) {
+    final src = d.scene?.source;
+    if (src?['project'] != null) return '${_baseOf(d)}.stj';
+    return (src?['name'] as String?) ?? d.path?.split(Platform.pathSeparator).last ?? 'схема';
+  }
+
   Widget _canvas(Tok t) {
     return Container(
       decoration: BoxDecoration(
@@ -704,24 +923,14 @@ class _HomeState extends State<Home> {
       ),
       child: Stack(
         children: [
+          // у каждого таба свой холст: зум и положение сохраняются при переключении
           Positioned.fill(
-            child: SchemeView(
-              scene: _scene,
-              grid: _layers['grid']!,
-              tool: _tool,
-              selected: _selected,
-              controller: _cam,
-              onSelect: (h) => setState(() {
-                _selected = h;
-                if (h != null) _tab = 0;
-              }),
-              onAddJoint: _addJoint,
-              onHover: (h, ord) => setState(() {
-                _hover = h;
-                _ordinate = ord;
-              }),
-              onContext: _contextMenu,
-            ),
+            child: _docs.isEmpty
+                ? _schemeView(null)
+                : IndexedStack(
+                    index: _doc == null ? 0 : _docs.indexOf(_doc!),
+                    children: [for (final d in _docs) _schemeView(d)],
+                  ),
           ),
           if (_scene == null) Positioned.fill(child: _empty(t)),
           if (_scene != null) Positioned(right: 10, bottom: 10, child: _zoomBox(t)),
@@ -740,6 +949,27 @@ class _HomeState extends State<Home> {
             ),
         ],
       ),
+    );
+  }
+
+  Widget _schemeView(_Doc? d) {
+    return SchemeView(
+      key: ValueKey(d?.id ?? 0),
+      scene: d?.scene,
+      grid: _layers['grid']!,
+      tool: _tool,
+      selected: d?.selected,
+      controller: d?.cam ?? _noCam,
+      onSelect: (h) => setState(() {
+        _selected = h;
+        if (h != null) _tab = 0;
+      }),
+      onAddJoint: _addJoint,
+      onHover: (h, ord) => setState(() {
+        _hover = h;
+        _ordinate = ord;
+      }),
+      onContext: _contextMenu,
     );
   }
 
@@ -1280,7 +1510,10 @@ class _TextBtn extends StatelessWidget {
             Text(text, style: TextStyle(fontSize: 12.5, color: col)),
             if (key_ != null) ...[
               const SizedBox(width: 6),
-              Text(key_!, style: TextStyle(fontSize: 11, fontFamily: mono, color: t.muted)),
+              Text(
+                key_!,
+                style: TextStyle(fontSize: 11, fontFamily: mono, color: t.muted),
+              ),
             ],
           ],
         ),
@@ -1828,6 +2061,112 @@ class _RecentCard extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DocTab extends StatefulWidget {
+  final String title, tooltip;
+  final bool project, active, dirty, loading;
+  final VoidCallback onTap, onClose;
+  const _DocTab({
+    required this.title,
+    required this.tooltip,
+    required this.project,
+    required this.active,
+    required this.dirty,
+    required this.loading,
+    required this.onTap,
+    required this.onClose,
+  });
+
+  @override
+  State<_DocTab> createState() => _DocTabState();
+}
+
+class _DocTabState extends State<_DocTab> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Tok.of(context);
+    final w = widget;
+    // как в VS Code: у несохранённого – точка, при наведении она становится крестиком
+    final showClose = _hover || (w.active && !w.dirty);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: Listener(
+        // средняя кнопка мыши – закрыть
+        onPointerDown: (e) {
+          if (e.buttons == kMiddleMouseButton) w.onClose();
+        },
+        child: Tooltip(
+          message: w.tooltip,
+          waitDuration: const Duration(milliseconds: 700),
+          child: InkWell(
+            onTap: w.onTap,
+            hoverColor: Colors.transparent,
+            child: Container(
+              height: 32,
+              constraints: const BoxConstraints(maxWidth: 240),
+              padding: const EdgeInsets.only(left: 10, right: 4),
+              decoration: BoxDecoration(
+                color: w.active ? t.panel : (_hover ? t.panel : Colors.transparent),
+                border: Border(
+                  top: BorderSide(color: w.active ? t.accent : Colors.transparent, width: 2),
+                  right: BorderSide(color: t.line),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    w.project ? Icons.description_outlined : Icons.image_outlined,
+                    size: 14,
+                    color: w.active ? t.accent : t.muted,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      w.title,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: w.active ? t.text : t.muted,
+                        fontStyle: w.loading ? FontStyle.italic : FontStyle.normal,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: showClose
+                        ? Tooltip(
+                            message: 'Закрыть (Ctrl+W)',
+                            child: InkWell(
+                              onTap: w.onClose,
+                              hoverColor: t.panel2,
+                              child: Icon(Icons.close, size: 14, color: t.muted),
+                            ),
+                          )
+                        : w.dirty
+                        ? Center(
+                            child: Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(color: t.text, shape: BoxShape.circle),
+                            ),
+                          )
+                        : null,
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
