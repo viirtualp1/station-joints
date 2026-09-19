@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +12,7 @@ import 'recent.dart';
 import 'scene.dart';
 import 'scheme_view.dart';
 import 'theme.dart';
+import 'update.dart';
 
 const _layerNames = {
   'grid': 'Миллиметровка',
@@ -69,10 +72,17 @@ class _HomeState extends State<Home> {
   String? _toast;
   Timer? _toastTimer;
 
+  Timer? _autosaveTimer;
+  late final AppLifecycleListener _life;
+  Release? _update; // найденная новая версия
+
   @override
   void initState() {
     super.initState();
     _cam.addListener(() => setState(() {}));
+    // закрытие окна: спросить про несохранённые правки
+    _life = AppLifecycleListener(onExitRequested: _onExitRequested);
+    _autosaveTimer = Timer.periodic(const Duration(seconds: 30), (_) => _autosave());
     _start();
   }
 
@@ -81,18 +91,179 @@ class _HomeState extends State<Home> {
       await _backend.start();
       await _backend.call('ping');
       setState(() => _ready = true);
+      final restored = await _offerRestore();
       final p = widget.initialPath;
-      if (p != null && File(p).existsSync()) await _load(p);
+      if (!restored && p != null && File(p).existsSync()) await _load(p);
     } catch (e) {
       setState(() => _fatal = '$e\n\n${_backend.stderrTail}');
     }
+    unawaited(_checkUpdate());
   }
 
   @override
   void dispose() {
+    _life.dispose();
+    _autosaveTimer?.cancel();
     _backend.dispose();
     _toastTimer?.cancel();
     super.dispose();
+  }
+
+  Future<AppExitResponse> _onExitRequested() async {
+    if (!await _confirmDiscard()) return AppExitResponse.cancel;
+    _clearAutosave();
+    return AppExitResponse.exit;
+  }
+
+  // ------------------------------------------------------------------ автосохранение
+  static String get _autoDir => '${Recent.dir}${Platform.pathSeparator}autosave';
+  static File get _autoMeta => File('$_autoDir${Platform.pathSeparator}autosave.json');
+  static String get _autoFile => '$_autoDir${Platform.pathSeparator}autosave.stj';
+  bool _autosaving = false;
+
+  /// Раз в 30 с, если есть несохранённые правки, – резервная копия работы.
+  Future<void> _autosave() async {
+    if (!_dirty || _scene == null || _busy || _autosaving) return;
+    _autosaving = true;
+    try {
+      await _backend.call('save_project', {'path': _autoFile, 'autosave': true});
+      final src = _scene?.source ?? const {};
+      _autoMeta.writeAsStringSync(
+        jsonEncode({
+          'project': src['project'],
+          'origin': src['project'] == null ? _path : null,
+          'name': _base,
+          'saved': DateTime.now().toIso8601String(),
+        }),
+      );
+    } catch (_) {
+      // резервная копия – не критично
+    } finally {
+      _autosaving = false;
+    }
+  }
+
+  void _clearAutosave() {
+    for (final f in [_autoMeta, File(_autoFile)]) {
+      try {
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {}
+    }
+  }
+
+  /// При запуске: осталась резервная копия (программа закрылась, не сохранив правки)?
+  Future<bool> _offerRestore() async {
+    Map<String, dynamic> meta;
+    try {
+      if (!_autoMeta.existsSync() || !File(_autoFile).existsSync()) return false;
+      meta = (jsonDecode(_autoMeta.readAsStringSync()) as Map).cast<String, dynamic>();
+    } catch (_) {
+      _clearAutosave();
+      return false;
+    }
+    if (!mounted) return false;
+    final when = DateTime.tryParse('${meta['saved']}');
+    final t = Tok.of(context);
+    final v = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => AlertDialog(
+        shape: RoundedRectangleBorder(side: BorderSide(color: t.line)),
+        backgroundColor: t.panel,
+        title: Text('Восстановить работу?', style: TextStyle(fontSize: 15, color: t.text)),
+        content: Text(
+          'Программа закрылась, не сохранив правки в «${meta['name']}».'
+          '${when == null ? '' : ' Резервная копия: ${_hhmm(when)}.'}',
+          style: TextStyle(fontSize: 13, color: t.muted),
+        ),
+        actions: [
+          _TextBtn('Удалить копию', null, () => Navigator.pop(c, false), outlined: true),
+          _PrimaryBtn('Восстановить', () => Navigator.pop(c, true)),
+        ],
+      ),
+    );
+    if (v != true) {
+      _clearAutosave();
+      return false;
+    }
+    final res = await _run(
+      'Восстановление…',
+      () => _backend.call('restore', {'path': _autoFile, 'project_path': meta['project'], 'origin': meta['origin']}),
+    );
+    if (res == null) return false;
+    _path = (meta['project'] ?? meta['origin']) as String?;
+    _apply(res);
+    _syncSettings();
+    setState(() => _dirty = true);
+    _say('Работа восстановлена – не забудьте сохранить (Ctrl+S)');
+    return true;
+  }
+
+  String _hhmm(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')} '
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+
+  /// Настройки листа и направления – как у открытой схемы.
+  void _syncSettings() {
+    final src = _scene?.source ?? const {};
+    setState(() {
+      final sh = src['sheets'] as String?;
+      _twoSheets = sh != null;
+      if (sh != null) _fmt = sh;
+      _oddRight = src['odd_right'] as bool? ?? _oddRight;
+    });
+  }
+
+  // ------------------------------------------------------------------ обновления
+  Future<void> _checkUpdate() async {
+    final r = await checkUpdate();
+    if (r != null && mounted) setState(() => _update = r);
+  }
+
+  Future<void> _showUpdate() async {
+    final r = _update;
+    if (r == null) return;
+    final t = Tok.of(context);
+    final v = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        shape: RoundedRectangleBorder(side: BorderSide(color: t.line)),
+        backgroundColor: t.panel,
+        title: Text('Доступна версия ${r.version}', style: TextStyle(fontSize: 15, color: t.text)),
+        content: SizedBox(
+          width: 420,
+          child: SingleChildScrollView(
+            child: Text(
+              'Установлена $appVersion.${r.notes.isEmpty ? '' : '\n\n${r.notes}'}',
+              style: TextStyle(fontSize: 13, height: 1.45, color: t.muted),
+            ),
+          ),
+        ),
+        actions: [
+          _TextBtn('Позже', null, () => Navigator.pop(c)),
+          _TextBtn('Страница выпуска', null, () => Navigator.pop(c, 'page'), outlined: true),
+          if (r.installer != null) _PrimaryBtn('Обновить', () => Navigator.pop(c, 'install')),
+        ],
+      ),
+    );
+    if (v == 'page') openUrl(r.page);
+    if (v == 'install') await _install(r);
+  }
+
+  /// Скачать установщик, запустить его и закрыть программу (установщик заменит файлы).
+  Future<void> _install(Release r) async {
+    if (!await _confirmDiscard()) return;
+    final path = await _run(
+      'Загрузка обновления…',
+      () => downloadInstaller(r, (p) {
+        if (mounted) setState(() => _busyText = 'Загрузка обновления… ${(p * 100).round()}%');
+      }),
+    );
+    if (path == null) return;
+    await Process.start(path, ['/SILENT', '/NORESTART'], mode: ProcessStartMode.detached);
+    _clearAutosave();
+    _backend.dispose();
+    exit(0);
   }
 
   // ------------------------------------------------------------------ действия
@@ -163,7 +334,10 @@ class _HomeState extends State<Home> {
         ],
       ),
     );
-    if (v == 'discard') return true;
+    if (v == 'discard') {
+      _clearAutosave();
+      return true;
+    }
     if (v == 'save') return await _save();
     return false;
   }
@@ -187,6 +361,7 @@ class _HomeState extends State<Home> {
       _path = target;
       _dirty = false;
     });
+    _clearAutosave();
     await _remember(target, project: true, replaces: old == null ? src['path'] as String? : null);
     _say('Работа сохранена: ${target.split(Platform.pathSeparator).last}');
     return true;
@@ -225,14 +400,9 @@ class _HomeState extends State<Home> {
     if (res == null) return;
     _path = path;
     _apply(res);
-    final src = _scene!.source ?? const {};
-    setState(() {
-      final sh = src['sheets'] as String?;
-      _twoSheets = sh != null;
-      if (sh != null) _fmt = sh;
-      _oddRight = src['odd_right'] as bool? ?? _oddRight;
-      _dirty = false;
-    });
+    _syncSettings();
+    setState(() => _dirty = false);
+    _clearAutosave();
     await _remember(path, project: project);
   }
 
@@ -258,6 +428,24 @@ class _HomeState extends State<Home> {
       }),
       keepSelection: true,
     );
+  }
+
+  Future<void> _undo() async {
+    if (_scene?.undo == null || _busy) return;
+    final res = await _backend.call('undo');
+    _apply(res);
+    _syncSettings();
+    setState(() => _dirty = true);
+    _say('Отменено: ${res['done']}');
+  }
+
+  Future<void> _redo() async {
+    if (_scene?.redo == null || _busy) return;
+    final res = await _backend.call('redo');
+    _apply(res);
+    _syncSettings();
+    setState(() => _dirty = true);
+    _say('Повторено: ${res['done']}');
   }
 
   Future<void> _recompute() async {
@@ -330,6 +518,10 @@ class _HomeState extends State<Home> {
       if (_ready) _open();
     } else if (ctrl && k == LogicalKeyboardKey.keyS) {
       _save(as: shift);
+    } else if (ctrl && (k == LogicalKeyboardKey.keyY || (shift && k == LogicalKeyboardKey.keyZ))) {
+      _redo();
+    } else if (ctrl && k == LogicalKeyboardKey.keyZ) {
+      _undo();
     } else if (ctrl && k == LogicalKeyboardKey.keyE) {
       _export('png');
     } else if (ctrl && k == LogicalKeyboardKey.keyP) {
@@ -426,6 +618,17 @@ class _HomeState extends State<Home> {
             }),
           ),
           const _Sep(),
+          _IconBtn(
+            Icons.undo,
+            _scene?.undo == null ? 'Отменить (Ctrl+Z)' : 'Отменить: ${_scene!.undo} (Ctrl+Z)',
+            _scene?.undo == null ? null : _undo,
+          ),
+          _IconBtn(
+            Icons.redo,
+            _scene?.redo == null ? 'Повторить (Ctrl+Y)' : 'Повторить: ${_scene!.redo} (Ctrl+Y)',
+            _scene?.redo == null ? null : _redo,
+          ),
+          const _Sep(),
           _ToolBtn(
             Icons.near_me_outlined,
             'Выбор',
@@ -443,6 +646,10 @@ class _HomeState extends State<Home> {
           const _Sep(),
           _TextBtn('Расставить заново', 'Ctrl+R', has ? _recompute : null),
           const Spacer(),
+          if (_update != null) ...[
+            _UpdateChip(version: _update!.version, onTap: _showUpdate),
+            const SizedBox(width: 8),
+          ],
           _ExportMenu(enabled: has, onPick: _export),
           const SizedBox(width: 4),
           _IconBtn(
@@ -1033,22 +1240,22 @@ class _TextBtn extends StatelessWidget {
               color: t.panel,
             )
           : null,
-      alignment: Alignment.center,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        // шрифты разные (Segoe UI и Consolas) – выравниваем по базовой линии, не по центру
-        crossAxisAlignment: CrossAxisAlignment.baseline,
-        textBaseline: TextBaseline.alphabetic,
-        children: [
-          Text(text, style: TextStyle(fontSize: 12.5, color: col)),
-          if (key_ != null) ...[
-            const SizedBox(width: 6),
-            Text(
-              key_!,
-              style: TextStyle(fontSize: 11, fontFamily: mono, color: t.muted),
-            ),
+      // по центру по высоте, по ширине – как содержимое (widthFactor: 1)
+      child: Align(
+        widthFactor: 1,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          // шрифты разные (Segoe UI и Consolas) – выравниваем по базовой линии, не по центру
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(text, style: TextStyle(fontSize: 12.5, color: col)),
+            if (key_ != null) ...[
+              const SizedBox(width: 6),
+              Text(key_!, style: TextStyle(fontSize: 11, fontFamily: mono, color: t.muted)),
+            ],
           ],
-        ],
+        ),
       ),
     );
     return InkWell(onTap: onTap, hoverColor: t.panel2, child: child);
@@ -1068,10 +1275,12 @@ class _PrimaryBtn extends StatelessWidget {
         height: 30,
         padding: const EdgeInsets.symmetric(horizontal: 14),
         color: onTap == null ? t.muted : t.accent,
-        alignment: Alignment.center,
-        child: Text(
-          text,
-          style: const TextStyle(fontSize: 12.5, color: Colors.white, fontWeight: FontWeight.w600),
+        child: Align(
+          widthFactor: 1, // ширина – по тексту (в диалогах кнопки не растягиваются)
+          child: Text(
+            text,
+            style: const TextStyle(fontSize: 12.5, color: Colors.white, fontWeight: FontWeight.w600),
+          ),
         ),
       ),
     );
@@ -1590,6 +1799,37 @@ class _RecentCard extends StatelessWidget {
                   ],
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UpdateChip extends StatelessWidget {
+  final String version;
+  final VoidCallback onTap;
+  const _UpdateChip({required this.version, required this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    final t = Tok.of(context);
+    return Tooltip(
+      message: 'Доступна новая версия',
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          height: 26,
+          padding: const EdgeInsets.symmetric(horizontal: 9),
+          decoration: BoxDecoration(
+            color: t.accentSoft,
+            border: Border.all(color: t.accent),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.system_update_alt, size: 14, color: t.accent),
+              const SizedBox(width: 6),
+              Text('Обновление $version', style: TextStyle(fontSize: 12, color: t.accent)),
             ],
           ),
         ),

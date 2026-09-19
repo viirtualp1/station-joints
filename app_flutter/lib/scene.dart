@@ -26,14 +26,31 @@ sealed class Item {
       case 'line':
         return LineItem(g, [for (final p in j['p'] as List) _pt(p)], parseColor(j['c']), _d(j['w']));
       case 'poly':
-        return PolyItem(g, [for (final p in j['p'] as List) _pt(p)], parseColor(j['f']),
-            parseColor(j['c']), _d(j['w']));
+        return PolyItem(
+          g,
+          [for (final p in j['p'] as List) _pt(p)],
+          parseColor(j['f']),
+          parseColor(j['c']),
+          _d(j['w']),
+        );
       case 'circle':
-        return CircleItem(g, Offset(_d(j['x']), _d(j['y'])), _d(j['r']), parseColor(j['f']),
-            parseColor(j['c']), _d(j['w']));
+        return CircleItem(
+          g,
+          Offset(_d(j['x']), _d(j['y'])),
+          _d(j['r']),
+          parseColor(j['f']),
+          parseColor(j['c']),
+          _d(j['w']),
+        );
       case 'text':
-        return TextItem(g, Offset(_d(j['x']), _d(j['y'])), j['s'] as String, _d(j['h']),
-            j['a'] as String? ?? 'la', parseColor(j['c']));
+        return TextItem(
+          g,
+          Offset(_d(j['x']), _d(j['y'])),
+          j['s'] as String,
+          _d(j['h']),
+          j['a'] as String? ?? 'la',
+          parseColor(j['c']),
+        );
     }
     throw FormatException('неизвестный примитив ${j['t']}');
   }
@@ -101,8 +118,7 @@ class SectionObj {
   final int joints, length;
   final List<(Offset, Offset)> segs;
   final Rect box;
-  SectionObj(this.id, this.name, this.kind, this.throat, this.switches, this.joints, this.length,
-      this.segs, this.box);
+  SectionObj(this.id, this.name, this.kind, this.throat, this.switches, this.joints, this.length, this.segs, this.box);
 
   factory SectionObj.fromJson(Map<String, dynamic> o) {
     final bb = (o['box'] as List).map(_d).toList();
@@ -114,10 +130,7 @@ class SectionObj {
       [for (final s in o['switches'] as List) s as String],
       o['joints'] as int,
       (o['length'] as num).round(),
-      [
-        for (final s in o['segs'] as List)
-          (Offset(_d(s[0]), _d(s[1])), Offset(_d(s[2]), _d(s[3])))
-      ],
+      [for (final s in o['segs'] as List) (Offset(_d(s[0]), _d(s[1])), Offset(_d(s[2]), _d(s[3])))],
       Rect.fromLTRB(bb[0], bb[1], bb[2], bb[3]),
     );
   }
@@ -153,6 +166,7 @@ class Scene {
   final List<SignalObj> signals;
   final List<SectionObj> sections;
   final List<String> issues;
+  final String? undo, redo; // что отменит / повторит Ctrl+Z / Ctrl+Y
   Map<String, dynamic>? source; // сведения об открытом файле (меняются при сохранении)
 
   Scene({
@@ -166,6 +180,8 @@ class Scene {
     required this.signals,
     required this.sections,
     required this.issues,
+    this.undo,
+    this.redo,
     this.source,
   });
 
@@ -178,36 +194,40 @@ class Scene {
       items: [for (final it in j['items'] as List) Item.fromJson(it as Map<String, dynamic>)],
       annots: [
         for (final a in j['annots'] as List)
-          AnnotObj(Rect.fromLTRB(_d(a['x0']), _d(a['y0']), _d(a['x1']), _d(a['y1'])),
-              base64Decode(a['png'] as String))
+          AnnotObj(Rect.fromLTRB(_d(a['x0']), _d(a['y0']), _d(a['x1']), _d(a['y1'])), base64Decode(a['png'] as String)),
       ],
       joints: [
         for (final o in j['joints'] as List)
-          JointObj(o['id'] as int, Offset(_d(o['x']), _d(o['y'])), o['rule'] as String,
-              o['text'] as String? ?? '', o['negab'] as bool)
+          JointObj(
+            o['id'] as int,
+            Offset(_d(o['x']), _d(o['y'])),
+            o['rule'] as String,
+            o['text'] as String? ?? '',
+            o['negab'] as bool,
+          ),
       ],
       edges: [
         for (final o in j['edges'] as List)
-          EdgeObj(o['id'] as int, Offset(_d(o['x0']), _d(o['y0'])), Offset(_d(o['x1']), _d(o['y1'])))
+          EdgeObj(o['id'] as int, Offset(_d(o['x0']), _d(o['y0'])), Offset(_d(o['x1']), _d(o['y1']))),
       ],
       signals: [
         for (final o in j['signals'] as List)
           SignalObj(
-              o['id'] as int,
-              o['name'] as String,
-              o['kind'] as String,
-              o['why'] as String,
-              o['ordinate'] as int,
-              () {
-                final bb = (o['box'] as List).map(_d).toList();
-                return Rect.fromLTRB(bb[0], bb[1], bb[2], bb[3]);
-              }())
+            o['id'] as int,
+            o['name'] as String,
+            o['kind'] as String,
+            o['why'] as String,
+            o['ordinate'] as int,
+            () {
+              final bb = (o['box'] as List).map(_d).toList();
+              return Rect.fromLTRB(bb[0], bb[1], bb[2], bb[3]);
+            }(),
+          ),
       ],
-      sections: [
-        for (final o in (j['sections'] as List? ?? const []))
-          SectionObj.fromJson(o as Map<String, dynamic>)
-      ],
+      sections: [for (final o in (j['sections'] as List? ?? const [])) SectionObj.fromJson(o as Map<String, dynamic>)],
       issues: [for (final s in (j['issues'] as List? ?? const [])) s as String],
+      undo: (j['history'] as Map?)?['undo'] as String?,
+      redo: (j['history'] as Map?)?['redo'] as String?,
       source: source ?? (j['source'] as Map?)?.cast<String, dynamic>(),
     );
   }

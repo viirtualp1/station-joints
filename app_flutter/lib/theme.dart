@@ -43,8 +43,7 @@ class Tok {
     paper: Color(0xFFFBFBFA), // лист остаётся бумажным и в тёмной теме
   );
 
-  static Tok of(BuildContext c) =>
-      Theme.of(c).brightness == Brightness.dark ? dark : light;
+  static Tok of(BuildContext c) => Theme.of(c).brightness == Brightness.dark ? dark : light;
 }
 
 const mono = 'Consolas';
@@ -56,12 +55,10 @@ ThemeData buildTheme(Brightness b) {
     useMaterial3: true,
     fontFamily: 'Segoe UI',
     visualDensity: VisualDensity.compact,
-    colorScheme: ColorScheme.fromSeed(seedColor: t.accent, brightness: b).copyWith(
-      primary: t.accent,
-      surface: t.panel,
-      onSurface: t.text,
-      outline: t.line,
-    ),
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: t.accent,
+      brightness: b,
+    ).copyWith(primary: t.accent, surface: t.panel, onSurface: t.text, outline: t.line),
     scaffoldBackgroundColor: t.bg,
     dividerColor: t.line,
     splashFactory: NoSplash.splashFactory,

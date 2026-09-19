@@ -52,9 +52,11 @@ String? _dialog({
       ..nMaxFile = max
       ..lpstrTitle = PWSTR(titleP)
       ..lpstrDefExt = PWSTR(defP)
-      ..Flags = OPEN_FILENAME_FLAGS(save
-          ? OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST
-          : OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST);
+      ..Flags = OPEN_FILENAME_FLAGS(
+        save
+            ? OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST
+            : OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST,
+      );
     final ok = save ? GetSaveFileName(ofn) : GetOpenFileName(ofn);
     if (!ok) return null;
     return file.cast<Utf16>().toDartString();
@@ -72,20 +74,22 @@ const _images = ['png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff'];
 
 /// Открыть: работа .stj или картинка схемы.
 String? pickOpen() => _dialog(
-      save: false,
-      title: 'Открыть схему или работу',
-      filters: [
-        ('Работы и схемы', ['stj', ..._images]),
-        ('Работы «Стыки»', ['stj']),
-        ('Изображения', _images),
-        ('Все файлы', ['*']),
-      ],
-    );
+  save: false,
+  title: 'Открыть схему или работу',
+  filters: [
+    ('Работы и схемы', ['stj', ..._images]),
+    ('Работы «Стыки»', ['stj']),
+    ('Изображения', _images),
+    ('Все файлы', ['*']),
+  ],
+);
 
 String? pickSave(String suggestedName, String label, String ext) => _dialog(
-      save: true,
-      title: 'Сохранить',
-      filters: [(label, [ext])],
-      suggestedName: suggestedName,
-      defExt: ext,
-    );
+  save: true,
+  title: 'Сохранить',
+  filters: [
+    (label, [ext]),
+  ],
+  suggestedName: suggestedName,
+  defExt: ext,
+);

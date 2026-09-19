@@ -1,15 +1,22 @@
 """Сборка приложения для раздачи (без исходников).
 
     python build.py            – новая версия: Flutter-интерфейс + Python-бэкенд
-                                 -> dist/StationJoints/ и dist/StationJoints-win64.zip
+                                 -> dist/StationJoints/, установщик
+                                    dist/StationJoints-Setup-<версия>.exe и
+                                    портативный архив dist/StationJoints-win64.zip
     python build.py legacy     – старая версия на customtkinter -> dist/StationJoints.exe
 
 Python-часть собирается в отдельном окружении .build-venv, куда ставятся только нужные
 пакеты (OpenCV без GUI, numpy, Pillow) – так сборка заметно меньше.
 Для Flutter нужен Flutter SDK (flutter в PATH или C:\\src\\flutter) и Visual Studio
-Build Tools с компонентом C++.
+Build Tools с компонентом C++; для установщика – Inno Setup 6
+(winget install JRSoftware.InnoSetup), без него соберётся только архив.
+
+Версия – одна на всё: `version:` в app_flutter/pubspec.yaml.
 """
+import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,8 +27,31 @@ PY = os.path.join(VENV, 'Scripts' if os.name == 'nt' else 'bin', 'python')
 SEP = ';' if os.name == 'nt' else ':'
 APP = os.path.join(ROOT, 'app_flutter')
 EXCLUDE = [a for m in ('matplotlib', 'scipy', 'skimage', 'pandas', 'IPython', 'pytest',
-                       'customtkinter', 'tkinter')
+                       'customtkinter', 'tkinter',
+                       # не нужные форматы Pillow (AVIF – 7.6 МБ) и Tk/Qt
+                       'PIL.AvifImagePlugin', 'PIL._avif', 'PIL.WebPImagePlugin', 'PIL._webp',
+                       'PIL.ImageTk', 'PIL._imagingtk', 'PIL.ImageQt',
+                       # сеть не нужна – без OpenSSL (libssl + libcrypto ~ 7 МБ);
+                       # hashlib работает на встроенных sha1/md5
+                       'ssl', '_ssl', '_hashlib')
            for a in ('--exclude-module', m)]
+
+
+def app_version() -> str:
+    m = re.search(r'^version:\s*([0-9]+\.[0-9]+\.[0-9]+)', open(
+        os.path.join(APP, 'pubspec.yaml'), encoding='utf-8').read(), re.M)
+    if not m:
+        sys.exit('в app_flutter/pubspec.yaml нет строки version: X.Y.Z')
+    return m.group(1)
+
+
+def iscc_cmd():
+    for c in (shutil.which('ISCC'),
+              os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Inno Setup 6', 'ISCC.exe'),
+              r'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'):
+        if c and os.path.exists(c):
+            return c
+    return None
 
 
 def run(*args, cwd=ROOT):
@@ -63,8 +93,9 @@ def build_flutter():
     for f in os.listdir(cv2dir) if os.path.isdir(cv2dir) else []:
         if f.startswith('opencv_videoio_ffmpeg'):
             os.remove(os.path.join(cv2dir, f))
-    # 2) интерфейс
-    run(flutter_cmd(), 'build', 'windows', '--release', cwd=APP)
+    # 2) интерфейс (версия – для проверки обновлений)
+    ver = app_version()
+    run(flutter_cmd(), 'build', 'windows', '--release', f'--dart-define=APP_VERSION={ver}', cwd=APP)
     rel = os.path.join(APP, 'build', 'windows', 'x64', 'runner', 'Release')
     # 3) сборка вместе: интерфейс + backend/
     out = os.path.join(ROOT, 'dist', 'StationJoints')
@@ -82,8 +113,18 @@ def build_flutter():
         os.remove(zip_base + '.zip')
     shutil.make_archive(zip_base, 'zip', os.path.join(ROOT, 'dist'), os.path.basename(out))
     size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(out) for f in fs)
-    print(f'\nГотово: {out} ({size / 2**20:.0f} МБ), '
+    print(f'\nГотово {ver}: {out} ({size / 2**20:.0f} МБ), '
           f'архив {zip_base}.zip ({os.path.getsize(zip_base + ".zip") / 2**20:.0f} МБ)')
+    # 4) установщик
+    iscc = iscc_cmd()
+    if not iscc:
+        print('Inno Setup не найден – установщик не собран (winget install JRSoftware.InnoSetup)')
+        return
+    for old in glob.glob(os.path.join(ROOT, 'dist', 'StationJoints-Setup-*.exe')):
+        os.remove(old)
+    run(iscc, '/Q', f'/DAppVersion={ver}', f'/DSourceDir={out}', 'installer.iss')
+    setup = os.path.join(ROOT, 'dist', f'StationJoints-Setup-{ver}.exe')
+    print(f'Установщик: {setup} ({os.path.getsize(setup) / 2**20:.0f} МБ)')
 
 
 def build_legacy():

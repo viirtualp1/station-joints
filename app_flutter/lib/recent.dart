@@ -9,8 +9,7 @@ class RecentItem {
   final bool project;
   RecentItem(this.path, this.name, this.opened, this.project);
 
-  Map<String, dynamic> toJson() =>
-      {'path': path, 'name': name, 'opened': opened.toIso8601String(), 'project': project};
+  Map<String, dynamic> toJson() => {'path': path, 'name': name, 'opened': opened.toIso8601String(), 'project': project};
 
   static RecentItem? fromJson(Object? o) {
     if (o is! Map) return null;
@@ -68,9 +67,7 @@ class Recent {
   /// оставляем только работу.
   static List<RecentItem> touch(String path, String name, {required bool project, String? replaces}) {
     final key = path.toLowerCase(), old = replaces?.toLowerCase();
-    final items = load()
-        .where((i) => i.path.toLowerCase() != key && i.path.toLowerCase() != old)
-        .toList()
+    final items = load().where((i) => i.path.toLowerCase() != key && i.path.toLowerCase() != old).toList()
       ..insert(0, RecentItem(path, name, DateTime.now(), project));
     if (items.length > max) items.removeRange(max, items.length);
     _save(items);

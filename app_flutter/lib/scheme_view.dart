@@ -83,8 +83,7 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
   Scene? _picScene;
   final Map<AnnotObj, ui.Image> _annotImg = {};
 
-  late final AnimationController _anim =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 260));
+  late final AnimationController _anim = AnimationController(vsync: this, duration: const Duration(milliseconds: 260));
   double _k0 = 1, _k1 = 1;
   Offset _c0 = Offset.zero, _c1 = Offset.zero; // центр экрана в мм – начало/конец
 
@@ -111,9 +110,8 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
     widget.controller._s = this;
     if (!identical(old.scene, widget.scene)) {
       _pic = null;
-      final boundsChanged = old.scene == null ||
-          widget.scene == null ||
-          (old.scene!.bounds.width - widget.scene!.bounds.width).abs() > 1;
+      final boundsChanged =
+          old.scene == null || widget.scene == null || (old.scene!.bounds.width - widget.scene!.bounds.width).abs() > 1;
       if (boundsChanged) _fitted = false;
       _loadAnnots();
     }
@@ -139,8 +137,7 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
   }
 
   // ---------------------------------------------------------------- камера
-  double _fitScale(Rect b) =>
-      math.min((_size.width - 48) / b.width, (_size.height - 48) / b.height).clamp(0.05, 400);
+  double _fitScale(Rect b) => math.min((_size.width - 48) / b.width, (_size.height - 48) / b.height).clamp(0.05, 400);
 
   Offset _toModel(Offset p) => (p - _o) / _k;
 
@@ -329,55 +326,57 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final tok = Tok.of(context);
-    return LayoutBuilder(builder: (context, c) {
-      final size = c.biggest;
-      if (size != _size) {
-        final center = _size.isEmpty ? null : _toModel(_size.center(Offset.zero));
-        _size = size;
-        if (center != null && _fitted) _setCamera(_k, center);
-      }
-      final s = widget.scene;
-      if (s != null && !_fitted && !size.isEmpty) {
-        _setCamera(_fitScale(s.bounds), s.bounds.center);
-        _fitted = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) => widget.controller._changed());
-      }
-      if (s != null && !identical(_picScene, s)) {
-        _pic = _record(s);
-        _picScene = s;
-      }
-      return MouseRegion(
-        cursor: _cursor,
-        onExit: (_) {
-          widget.onHover(null, null);
-          setState(() => _hover = null);
-        },
-        child: Listener(
-          onPointerSignal: _onSignal,
-          onPointerDown: _onDown,
-          onPointerMove: _onMove,
-          onPointerUp: _onUp,
-          onPointerHover: _onHover,
-          child: ClipRect(
-           child: CustomPaint(
-            size: size,
-            painter: _Painter(
-              scene: s,
-              picture: _pic,
-              annots: _annotImg,
-              k: _k,
-              o: _o,
-              grid: widget.grid,
-              hover: _hover,
-              selected: widget.selected,
-              tool: widget.tool,
-              tok: tok,
+    return LayoutBuilder(
+      builder: (context, c) {
+        final size = c.biggest;
+        if (size != _size) {
+          final center = _size.isEmpty ? null : _toModel(_size.center(Offset.zero));
+          _size = size;
+          if (center != null && _fitted) _setCamera(_k, center);
+        }
+        final s = widget.scene;
+        if (s != null && !_fitted && !size.isEmpty) {
+          _setCamera(_fitScale(s.bounds), s.bounds.center);
+          _fitted = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) => widget.controller._changed());
+        }
+        if (s != null && !identical(_picScene, s)) {
+          _pic = _record(s);
+          _picScene = s;
+        }
+        return MouseRegion(
+          cursor: _cursor,
+          onExit: (_) {
+            widget.onHover(null, null);
+            setState(() => _hover = null);
+          },
+          child: Listener(
+            onPointerSignal: _onSignal,
+            onPointerDown: _onDown,
+            onPointerMove: _onMove,
+            onPointerUp: _onUp,
+            onPointerHover: _onHover,
+            child: ClipRect(
+              child: CustomPaint(
+                size: size,
+                painter: _Painter(
+                  scene: s,
+                  picture: _pic,
+                  annots: _annotImg,
+                  k: _k,
+                  o: _o,
+                  grid: widget.grid,
+                  hover: _hover,
+                  selected: widget.selected,
+                  tool: widget.tool,
+                  tok: tok,
+                ),
+              ),
             ),
-           ),
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
   }
 }
 
@@ -404,23 +403,25 @@ ui.Picture _record(Scene s) {
         if (fill != null) c.drawPath(path, Paint()..color = fill);
         if (stroke != null) {
           c.drawPath(
-              path,
-              Paint()
-                ..color = stroke
-                ..style = PaintingStyle.stroke
-                ..strokeWidth = width);
+            path,
+            Paint()
+              ..color = stroke
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = width,
+          );
         }
       case CircleItem(c: final ctr, :final r, :final fill, :final stroke, :final width):
         if (fill != null) c.drawCircle(ctr, r, Paint()..color = fill);
         if (stroke != null) {
           // PIL рисует контур внутрь круга – повторяем, чтобы размеры совпали
           c.drawCircle(
-              ctr,
-              math.max(0, r - width / 2),
-              Paint()
-                ..color = stroke
-                ..style = PaintingStyle.stroke
-                ..strokeWidth = width);
+            ctr,
+            math.max(0, r - width / 2),
+            Paint()
+              ..color = stroke
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = width,
+          );
         }
       case TextItem(:final at, :final text, :final size, :final anchor, :final color):
         _drawText(c, at, text, size, anchor, color ?? Colors.black);
@@ -432,13 +433,18 @@ ui.Picture _record(Scene s) {
 void _drawText(Canvas c, Offset at, String text, double size, String anchor, Color color) {
   final tp = TextPainter(
     text: TextSpan(
-        text: text,
-        style: TextStyle(fontFamily: 'Arial', fontSize: size, color: color, height: 1.0)),
+      text: text,
+      style: TextStyle(fontFamily: 'Arial', fontSize: size, color: color, height: 1.0),
+    ),
     textDirection: TextDirection.ltr,
   )..layout();
   final h = anchor.isNotEmpty ? anchor[0] : 'l';
   final v = anchor.length > 1 ? anchor[1] : 'a';
-  final dx = switch (h) { 'm' => -tp.width / 2, 'r' => -tp.width, _ => 0.0 };
+  final dx = switch (h) {
+    'm' => -tp.width / 2,
+    'r' => -tp.width,
+    _ => 0.0,
+  };
   final base = tp.computeDistanceToActualBaseline(TextBaseline.alphabetic);
   final dy = switch (v) {
     'm' => -base * 0.62, // PIL «middle» – середина между верхом прописных и низом
@@ -488,8 +494,12 @@ class _Painter extends CustomPainter {
     for (final a in s.annots) {
       final img = annots[a];
       if (img == null) continue;
-      canvas.drawImageRect(img, Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-          a.rect, Paint()..filterQuality = FilterQuality.medium);
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        a.rect,
+        Paint()..filterQuality = FilterQuality.medium,
+      );
     }
     if (picture != null) canvas.drawPicture(picture!);
     canvas.restore();

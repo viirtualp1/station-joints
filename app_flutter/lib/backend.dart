@@ -23,27 +23,28 @@ class Backend {
   Future<void> start() async {
     final (exe, args, cwd) = _locate();
     try {
-      _proc = await Process.start(exe, args, workingDirectory: cwd, environment: {
-        'PYTHONIOENCODING': 'utf-8',
-        'PYTHONUTF8': '1',
-      });
+      _proc = await Process.start(
+        exe,
+        args,
+        workingDirectory: cwd,
+        environment: {'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1'},
+      );
     } on ProcessException catch (e) {
       startError = 'Не удалось запустить бэкенд ($exe): ${e.message}';
       rethrow;
     }
-    _proc!.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen(_onLine);
+    _proc!.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(_onLine);
     _proc!.stderr.transform(utf8.decoder).listen(_log.write);
-    unawaited(_proc!.exitCode.then((code) {
-      final err = StateError('Бэкенд завершился (код $code)\n$stderrTail');
-      for (final c in _pending.values) {
-        if (!c.isCompleted) c.completeError(err);
-      }
-      _pending.clear();
-      _proc = null;
-    }));
+    unawaited(
+      _proc!.exitCode.then((code) {
+        final err = StateError('Бэкенд завершился (код $code)\n$stderrTail');
+        for (final c in _pending.values) {
+          if (!c.isCompleted) c.completeError(err);
+        }
+        _pending.clear();
+        _proc = null;
+      }),
+    );
   }
 
   (String, List<String>, String?) _locate() {
@@ -54,8 +55,10 @@ class Backend {
           : (env, <String>[], File(env).parent.path);
     }
     final appDir = File(Platform.resolvedExecutable).parent;
-    final bundled = File('${appDir.path}${Platform.pathSeparator}backend'
-        '${Platform.pathSeparator}server${Platform.isWindows ? '.exe' : ''}');
+    final bundled = File(
+      '${appDir.path}${Platform.pathSeparator}backend'
+      '${Platform.pathSeparator}server${Platform.isWindows ? '.exe' : ''}',
+    );
     if (bundled.existsSync()) return (bundled.path, <String>[], bundled.parent.path);
     // разработка: ищем server.py выше по дереву (от приложения и от текущей папки)
     for (final start in [appDir, Directory.current]) {

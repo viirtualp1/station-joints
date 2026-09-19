@@ -6,6 +6,7 @@
 // Ни окон, ни движений мыши – можно запускать, пока компьютер занят другим.
 import 'dart:io';
 import 'dart:ui' as ui;
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -131,6 +132,54 @@ void main() {
     await _waitFor(t, find.text('НЕДАВНИЕ'));
     await t.runAsync(() => Future.delayed(const Duration(milliseconds: 500)));
     await _shot(t, '8_start');
+    await t.pumpWidget(const SizedBox());
+    await t.runAsync(() => Future.delayed(const Duration(milliseconds: 300)));
+  });
+
+  testWidgets('защита работы: отмена, закрытие, автосохранение, восстановление', (t) async {
+    t.view.physicalSize = const Size(1480, 900);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    await t.pumpWidget(RepaintBoundary(key: _boundary, child: StationApp(initialPath: _sample)));
+    await _waitFor(t, find.textContaining('светофоров'));
+
+    // правка -> можно отменить
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.keyR);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await _waitFor(t, find.byTooltip('Отменить: расстановка заново (Ctrl+Z)'));
+    await t.tap(find.byTooltip('Отменить: расстановка заново (Ctrl+Z)'));
+    await _waitFor(t, find.textContaining('Отменено'));
+    await _waitFor(t, find.byTooltip('Повторить: расстановка заново (Ctrl+Y)'));
+    await _shot(t, '9_undo');
+
+    // закрытие окна с несохранёнными правками -> вопрос; «Отмена» – окно остаётся
+    final exit = t.binding.handleRequestAppExit();
+    await t.pump(const Duration(milliseconds: 300));
+    expect(find.text('Сохранить изменения?'), findsOneWidget);
+    await _shot(t, '10_close');
+    await t.tap(find.text('Отмена'));
+    await t.pump(const Duration(milliseconds: 300));
+    expect(await exit, AppExitResponse.cancel);
+
+    // автосохранение через 30 с
+    await t.pump(const Duration(seconds: 31));
+    final auto = File('${Recent.dir}${Platform.pathSeparator}autosave${Platform.pathSeparator}autosave.json');
+    for (var i = 0; i < 50 && !auto.existsSync(); i++) {
+      await t.runAsync(() => Future.delayed(const Duration(milliseconds: 200)));
+    }
+    expect(auto.existsSync(), isTrue);
+
+    // «сбой»: программа закрыта без сохранения -> при запуске предложит восстановить
+    await t.pumpWidget(const SizedBox());
+    await t.runAsync(() => Future.delayed(const Duration(milliseconds: 300)));
+    await t.pumpWidget(RepaintBoundary(key: _boundary, child: const StationApp()));
+    await _waitFor(t, find.text('Восстановить работу?'));
+    await _shot(t, '11_restore');
+    await t.tap(find.text('Восстановить'));
+    await _waitFor(t, find.textContaining('светофоров'));
+    expect(find.text('не сохранено'), findsOneWidget);
+    await _shot(t, '12_restored');
     await t.pumpWidget(const SizedBox());
     await t.runAsync(() => Future.delayed(const Duration(milliseconds: 300)));
   });

@@ -17,9 +17,9 @@ class _StationAppState extends State<StationApp> {
   ThemeMode _mode = ThemeMode.system;
 
   void _toggle() {
-    final dark = _mode == ThemeMode.dark ||
-        (_mode == ThemeMode.system &&
-            WidgetsBinding.instance.platformDispatcher.platformBrightness == Brightness.dark);
+    final dark =
+        _mode == ThemeMode.dark ||
+        (_mode == ThemeMode.system && WidgetsBinding.instance.platformDispatcher.platformBrightness == Brightness.dark);
     setState(() => _mode = dark ? ThemeMode.light : ThemeMode.dark);
   }
 

@@ -3,8 +3,8 @@
 Запрос:  {"id": 1, "cmd": "load", "path": "...", "sheets": "A3"}
 Ответ:   {"id": 1, "ok": true, "result": {...}}  |  {"id": 1, "ok": false, "error": "..."}
 
-Команды: ping, sample, load, relayout, scene, recompute, add_joint, remove_joint,
-         toggle_negab, save_project, thumb, export_png, export_pdf, export_docx.
+Команды: ping, sample, load, restore, relayout, scene, recompute, add_joint, remove_joint,
+         toggle_negab, undo, redo, save_project, thumb, export_png, export_pdf, export_docx.
 Команды, меняющие схему, возвращают новую сцену (см. scene.py)."""
 from __future__ import annotations
 
@@ -28,7 +28,8 @@ from sheets import make_sheets, save_pdf
 from signals import place_signals
 from vedomost import save_docx
 
-VERSION = 2
+VERSION = 3
+HISTORY = 100                            # шагов отмены
 
 
 def resource(name: str) -> str:
@@ -53,6 +54,9 @@ class Session:
         self.path: str | None = None         # открытый файл: картинка или .stj
         self.project: str | None = None      # файл работы, если открыт/сохранён
         self.edited = False                  # есть ручные правки стыков
+        # история для отмены/повтора: снимки стыков и настроек компоновки
+        self.hist: list[dict] = []
+        self.pos = 0
 
     def _need(self) -> Station:
         if self.st is None:
@@ -71,6 +75,50 @@ class Session:
     def _with_source(self):
         res = self.scene()
         res['source'] = self._source()
+        res['history'] = self._history()
+        return res
+
+    # --- отмена / повтор -----------------------------------------------------------
+    def _snap(self, label: str) -> dict:
+        st = self._need()
+        return {'label': label, 'sheets': self.sheets, 'odd_right': st.odd_right,
+                'edited': self.edited, 'joints': project.joints_to_json(st.joints)}
+
+    def _reset_history(self):
+        self.hist, self.pos = [self._snap('')], 0
+
+    def _commit(self, label: str):
+        del self.hist[self.pos + 1:]
+        self.hist.append(self._snap(label))
+        if len(self.hist) > HISTORY:
+            del self.hist[0]
+        self.pos = len(self.hist) - 1
+
+    def _history(self):
+        return {'undo': self.hist[self.pos]['label'] if self.pos > 0 else None,
+                'redo': self.hist[self.pos + 1]['label'] if self.pos + 1 < len(self.hist) else None}
+
+    def _restore(self, snap: dict):
+        self.sheets, self.odd_right, self.edited = snap['sheets'], snap['odd_right'], snap['edited']
+        self._build(project.joints_from_json(snap['joints']))
+
+    def undo(self):
+        if self.pos == 0:
+            raise ValueError('нечего отменять')
+        label = self.hist[self.pos]['label']
+        self.pos -= 1
+        self._restore(self.hist[self.pos])
+        res = self._with_source()
+        res['done'] = label
+        return res
+
+    def redo(self):
+        if self.pos + 1 >= len(self.hist):
+            raise ValueError('нечего повторять')
+        self.pos += 1
+        self._restore(self.hist[self.pos])
+        res = self._with_source()
+        res['done'] = self.hist[self.pos]['label']
         return res
 
     def _settings(self, sheets, odd_right, layers):
@@ -96,9 +144,10 @@ class Session:
         check_entries(st)
         place_signals(st)                    # светофоры стоят на стыках – пересчитать
 
-    def _after_edit(self):
+    def _after_edit(self, label: str):
         self.edited = True
         self._refresh()
+        self._commit(label)
         return self._with_source()
 
     # --- команды -----------------------------------------------------------------
@@ -128,6 +177,7 @@ class Session:
         self.src_image = path
         self.path, self.project, self.edited = path, None, False
         self._build()
+        self._reset_history()
         return self._with_source()
 
     def _open_project(self, path: str):
@@ -149,7 +199,17 @@ class Session:
                 f.write(self.src)
         self.path, self.project, self.edited = path, path, d['edited']
         self._build(d['joints'])
+        self._reset_history()
         return self._with_source()
+
+    def restore(self, path: str, project_path: str | None = None, origin: str | None = None):
+        """Открыть автосохранение: схема из path, но «файл работы» – прежний
+        (project_path) или ещё не сохранённый (origin – исходная картинка)."""
+        res = self._open_project(path)
+        self.project = project_path or None
+        self.path = project_path or origin or self.src_name
+        res['source'] = self._source()
+        return res
 
     def relayout(self, sheets='keep', odd_right: bool | None = None):
         """Перекомпоновать без повторного распознавания (формат листов, направление).
@@ -159,12 +219,15 @@ class Session:
         self._settings(sheets, odd_right, None)
         self.edited = False
         self._build()
+        self._commit('перекомпоновка')
         return self._with_source()
 
     def scene_cmd(self, layers: dict | None = None):
         if layers:
             self.layers.update(layers)
-        return self.scene()
+        res = self.scene()
+        res['history'] = self._history()
+        return res
 
     def recompute(self):
         st = self._need()
@@ -172,6 +235,7 @@ class Session:
         snap_joints(st)
         place_signals(st)
         self.edited = False
+        self._commit('расстановка заново')
         return self._with_source()
 
     def add_joint(self, edge: int, t: float):
@@ -180,33 +244,38 @@ class Session:
         update_negab(st, [j])
         st.joints.append(j)
         st.log.append('  [р] стык добавлен вручную')
-        return self._after_edit()
+        return self._after_edit('добавление стыка')
 
     def remove_joint(self, joint: int):
         st = self._need()
         j = st.joints.pop(int(joint))
         st.log.append(f'  [р] удалён стык ({j.rule})')
-        return self._after_edit()
+        return self._after_edit('удаление стыка')
 
     def toggle_negab(self, joint: int):
         st = self._need()
         j = st.joints[int(joint)]
         j.negab = not j.negab
         j.fixed = True
-        return self._after_edit()
+        return self._after_edit('габарит стыка')
 
     def _preview(self):
         img, _ = render(self._need(), (960, 420), annots=self.annots, show_grid=False)
         return img.convert('RGB')
 
-    def save_project(self, path: str):
+    def save_project(self, path: str, autosave: bool = False):
+        """Сохранить работу. autosave – резервная копия: открытый файл не меняется."""
         st = self._need()
         assert self.graph0 is not None
+        if autosave:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
         project.save(path, graph=self.graph0, annots=self.annots0, info=self.info,
                      source=self.src, source_name=self.src_name,
                      settings={'sheets': self.sheets, 'odd_right': st.odd_right},
-                     joints=st.joints, preview=self._preview(), edited=self.edited)
-        self.path = self.project = path
+                     joints=st.joints, preview=None if autosave else self._preview(),
+                     edited=self.edited)
+        if not autosave:
+            self.path = self.project = path
         return {'source': self._source()}
 
     def thumb(self, path: str):
@@ -251,7 +320,8 @@ def main():
     handlers = {'ping': ses.ping, 'sample': ses.sample, 'load': ses.load,
                 'relayout': ses.relayout, 'scene': ses.scene_cmd, 'recompute': ses.recompute,
                 'add_joint': ses.add_joint, 'remove_joint': ses.remove_joint,
-                'toggle_negab': ses.toggle_negab, 'save_project': ses.save_project,
+                'toggle_negab': ses.toggle_negab, 'undo': ses.undo, 'redo': ses.redo,
+                'restore': ses.restore, 'save_project': ses.save_project,
                 'thumb': ses.thumb, 'export_png': ses.export_png,
                 'export_pdf': ses.export_pdf, 'export_docx': ses.export_docx}
     for line in sys.stdin:
