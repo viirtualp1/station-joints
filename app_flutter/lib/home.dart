@@ -894,10 +894,8 @@ class _HomeState extends State<Home> {
     final key = what == null ? null : '$what@${identityHashCode(_scene)}';
     if (key == _explainKey) return;
     _explainKey = key;
-    if (what == null) {
-      _explainData = null;
-      return;
-    }
+    _explainData = null; // выбрали другое – не показываем объяснение прошлого
+    if (what == null) return;
     final i = what.indexOf(':');
     _call('explain', {'what': what.substring(0, i), 'target': what.substring(i + 1)})
         .then((r) {
@@ -921,6 +919,10 @@ class _HomeState extends State<Home> {
     _explain = !_explain;
     _explainKey = null;
     _explainData = null;
+    if (_explain) {
+      _right = true; // объяснение – в правой панели
+      _tab = 0;
+    }
   });
 
   Widget _explainCard(Tok t) {
@@ -928,12 +930,13 @@ class _HomeState extends State<Home> {
     final items = [for (final i in (d?['items'] as List? ?? const [])) (i as Map).cast<String, dynamic>()];
     final ref = d?['ref'] as String? ?? '';
     return Container(
-      width: 380,
-      constraints: const BoxConstraints(maxHeight: 460),
+      constraints: const BoxConstraints(maxHeight: 420),
       decoration: BoxDecoration(
         color: t.panel,
-        border: Border.all(color: t.accent),
-        boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 12, offset: Offset(0, 3))],
+        border: Border(
+          bottom: BorderSide(color: t.line),
+          top: BorderSide(color: t.accent, width: 2),
+        ),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -1317,7 +1320,6 @@ class _HomeState extends State<Home> {
           ),
           if (_scene == null) Positioned.fill(child: _empty(t)),
           if (_scene != null) Positioned(right: 10, bottom: 10, child: _zoomBox(t)),
-          if (_explain && _scene != null) Positioned(left: 12, top: 12, child: _explainCard(t)),
           if (_toast != null)
             Positioned(
               left: 0,
@@ -1612,6 +1614,7 @@ class _HomeState extends State<Home> {
               ],
             ),
           ),
+          if (_explain && _scene != null) _explainCard(t),
           Expanded(
             child: switch (_tab) {
               0 => _props(t),

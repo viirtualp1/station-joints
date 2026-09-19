@@ -223,6 +223,12 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
     if (s == null) return null;
     final m = _toModel(screen);
     final tol = 9 / _k; // 9 px в мм
+    if (!edges) {
+      // светофор – раньше стыка: он рядом со стыком, но его рамка точная
+      for (final sg in s.signals) {
+        if (sg.box.inflate(0.5).contains(m)) return SignalHit(sg);
+      }
+    }
     JointObj? bj;
     var bd = tol;
     for (final j in s.joints) {
@@ -234,9 +240,6 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
     }
     if (bj != null && !edges) return JointHit(bj);
     if (!edges) {
-      for (final sg in s.signals) {
-        if (sg.box.inflate(0.5).contains(m)) return SignalHit(sg);
-      }
       final n = _nodeAt(m, 7 / _k);
       if (n != null) return NodeHit(n);
       // клик по пути – его изолированный участок

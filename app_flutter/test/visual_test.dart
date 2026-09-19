@@ -305,6 +305,16 @@ void main() {
     await _waitFor(t, find.textContaining('Методичка:'));
     await _shot(t, '14_explain');
 
+    // объяснение участка (клик по пути) и светофора
+    final v4 = t.widget<SchemeView>(find.byType(SchemeView).first);
+    final sec = v4.scene!.sections.firstWhere((s) => s.switches.isNotEmpty);
+    final mid = sec.segs.first;
+    await t.tapAt(origin + v4.controller.toScreen((mid.$1 + mid.$2) / 2)!);
+    await _waitFor(t, find.textContaining('Участок ${sec.name}'));
+    final sig = v4.scene!.signals.firstWhere((g) => g.code == 'man_dwarf');
+    await t.tapAt(origin + v4.controller.toScreen(sig.box.center)!);
+    await _waitFor(t, find.textContaining('Светофор ${sig.name}'));
+
     // 6) «Два листа» – ручные правки стыков переносятся
     await t.sendKeyEvent(LogicalKeyboardKey.f1);
     await t.tap(find.text('Два листа (горловины раздельно)'));
