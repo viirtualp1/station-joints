@@ -494,10 +494,11 @@ class _Painter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final dark = identical(tok, Tok.dark);
-    if (dark) canvas.saveLayer(Offset.zero & size, Paint()..colorFilter = _smartInvert);
-    // в тёмной теме серый #E3E3E1 после инверсии – #1C1C1E
-    canvas.drawRect(Offset.zero & size, Paint()..color = dark ? const Color(0xFFE3E3E1) : tok.paper);
+    // лист и миллиметровка – своими цветами; инвертируется только чертёж
+    canvas.drawRect(Offset.zero & size, Paint()..color = dark ? const Color(0xFF1C1C1E) : tok.paper);
     final s = scene;
+    if (s != null && grid) _grid(canvas, size, dark);
+    if (dark) canvas.saveLayer(Offset.zero & size, Paint()..colorFilter = _smartInvert);
     if (s != null) _drawSheet(canvas, size, s);
     if (dark) canvas.restore();
     if (s == null) return;
@@ -505,9 +506,8 @@ class _Painter extends CustomPainter {
     _mark(canvas, selected, hovered: false);
   }
 
-  /// Лист: миллиметровка, надписи с картинки, чертёж, линия склейки листов.
+  /// Надписи с картинки, чертёж, линия склейки листов.
   void _drawSheet(Canvas canvas, Size size, Scene s) {
-    if (grid) _grid(canvas, size);
 
     canvas.save();
     canvas.translate(o.dx, o.dy);
@@ -577,7 +577,7 @@ class _Painter extends CustomPainter {
   }
 
   /// Миллиметровка 1 / 5 / 10 мм – по экрану, чтобы линии были в 1 px при любом зуме.
-  void _grid(Canvas canvas, Size size) {
+  void _grid(Canvas canvas, Size size, bool dark) {
     final x0 = -o.dx / k, x1 = (size.width - o.dx) / k;
     final y0 = -o.dy / k, y1 = (size.height - o.dy) / k;
     void lines(double step, Color col, double w) {
@@ -594,6 +594,17 @@ class _Painter extends CustomPainter {
       }
     }
 
+    if (dark) {
+      // тёмная тема: едва тёплые линии чуть светлее фона – сетка не спорит с чертежом
+      if (k >= 6) lines(1, const Color(0xFF222120), 1);
+      if (k >= 2.5) lines(5, const Color(0xFF282624), 1);
+      if (k >= 0.9) {
+        lines(10, k >= 2.5 ? const Color(0xFF312D2A) : const Color(0xFF262422), 1);
+      } else {
+        lines(50, const Color(0xFF292725), 1);
+      }
+      return;
+    }
     if (k >= 6) lines(1, const Color(0xFFF6E7DC), 1);
     if (k >= 2.5) lines(5, const Color(0xFFF0D3BF), 1);
     if (k >= 0.9) {
