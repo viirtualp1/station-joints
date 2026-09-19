@@ -1,10 +1,13 @@
-"""Без GUI: python cli.py схема.jpg результат.png [--sections] [--names] [--grid] [--letters]"""
+"""Без GUI: python cli.py схема.jpg результат.png [--sections] [--names] [--grid] [--letters]
+                                                  [--sheets листы.pdf]
+--sheets – дополнительно PDF из двух листов в натуральную величину (разрез у оси станции)."""
 import sys
 
 from joints import report
 from layout import build_station
 from parser import parse_image
 from render import render
+from sheets import make_sheets, save_pdf
 
 
 def main():
@@ -17,6 +20,10 @@ def main():
                     show_grid='--grid' in sys.argv,
                     show_letters='--letters' in sys.argv)
     img.save(out)
+    if '--sheets' in sys.argv:
+        pdf = sys.argv[sys.argv.index('--sheets') + 1]
+        save_pdf(make_sheets(st, annots, show_grid='--grid' in sys.argv,
+                             show_letters='--letters' in sys.argv), pdf)
     print(report(st))
 
 

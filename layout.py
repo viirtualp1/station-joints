@@ -41,7 +41,7 @@ def snap(v: float, up=False) -> int:
 MARGIN = 20.0        # поля листа слева/сверху
 
 
-def build_station(graph, annots=()):
+def build_station(graph, annots=(), sheet_fmt: str | None = None):
     """analyse -> перенос на сетку -> раздвижка по нормам -> расстановка стыков."""
     st = analyse(graph)
     orig = {n.id: (n.x, n.y) for n in graph.nodes.values()}
@@ -54,9 +54,56 @@ def build_station(graph, annots=()):
     place_joints(st)
     snap_joints(st)
     place_signals(st)
+    if sheet_fmt:
+        # две горловины – на двух листах, пути парка вытянуты через оба (как чертят
+        # вручную на миллиметровке); после растяжки стыки и светофоры – заново
+        if spread_to_sheets(st, sheet_fmt):
+            place_joints(st)
+            snap_joints(st)
+            place_signals(st)
     st.geom_check = check_geometry(st)
     new_annots = _move_annots(st, annots, orig, y0, u0)
     return st, new_annots
+
+
+def _cut_candidates(st: Station):
+    """Ординаты, где схему пересекают только горизонтальные пути (растягивать можно)."""
+    g = st.g
+    xs = sorted({n.x for n in g.nodes.values()})
+    out = []
+    for a, b in zip(xs, xs[1:]):
+        if b - a < 1:
+            continue
+        x = (a + b) / 2
+        crossing = [e for e in g.edges.values()
+                    if min(g.nodes[e.a].x, g.nodes[e.b].x) < x < max(g.nodes[e.a].x, g.nodes[e.b].x)]
+        if crossing and all(abs(g.nodes[e.a].y - g.nodes[e.b].y) < 1e-6 for e in crossing):
+            out.append(x)
+    return out
+
+
+def spread_to_sheets(st: Station, fmt: str) -> bool:
+    """Растянуть пути парка по оси станции так, чтобы нечётная горловина заполнила
+    лист 1, чётная – лист 2 выбранного формата. Возвращает True, если растянули."""
+    from sheets import OVERLAP, _bounds, usable_width   # поздний импорт: sheets -> render
+    g = st.g
+    cands = _cut_candidates(st)
+    if not cands:
+        st.sheet_cut = None
+        return False
+    x = min(cands, key=lambda c: abs(c - st.xc))
+    bx0, _, bx1, _ = _bounds(st, ())
+    W = usable_width(fmt) - OVERLAP / 2 - 6        # запас под подписи у кромки
+    dl = max(0, math.floor((W - (x - bx0)) / 10) * 10)
+    dr = max(0, math.floor((W - (bx1 - x)) / 10) * 10)
+    d = dl + dr
+    if d:
+        for n in g.nodes.values():
+            if n.x > x:
+                n.x += d
+        refresh(st)
+    st.sheet_cut = x + dl
+    return d > 0
 
 
 # --------------------------------------------------------------------------

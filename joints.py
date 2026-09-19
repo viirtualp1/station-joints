@@ -57,6 +57,7 @@ class Station:
     slope_ok: bool = True                           # удалось выдержать наклон диагоналей
     pending_anchor: object = None                   # привязка, вычисленная _t_near/_t_between
     entry_check: list = field(default_factory=list)  # (сигнал, ok, первая стрелка)
+    sheet_cut: float | None = None                  # ордината стыка двух листов
 
 
 # --------------------------------------------------------------------------

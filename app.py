@@ -3,7 +3,8 @@
 Запуск:  python app.py [картинка]
 Схема:   ЛКМ по пути – добавить стык, ЛКМ по стыку – удалить, ПКМ по стыку – габарит/негабарит,
          колесо – зум, Ctrl+ЛКМ или средняя кнопка – перемещение, 0 – вписать.
-Клавиши: Ctrl+O – открыть, Ctrl+S – экспорт PNG, Ctrl+R – расставить заново.
+Клавиши: Ctrl+O – открыть, Ctrl+S – экспорт PNG, Ctrl+P – печать на 2 листа,
+         Ctrl+R – расставить заново.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from joints import (RULE_TEXT, Station, check_entries, compute_sections, name_se
 from layout import build_station, snap_joints
 from parser import parse_image
 from render import fit_view, render
+from sheets import make_sheets, save_pdf
 from signals import footprint, place_signals, signal_rows
 
 APP_NAME = 'Стыки'
@@ -100,6 +102,8 @@ class App(ctk.CTk):
         self.layers = {k: tk.BooleanVar(value=v) for k, v in dict(
             grid=True, joints=True, signals=True, numbers=True, letters=False,
             sections=False, section_names=False, annots=True).items()}
+        self.two_sheets = tk.BooleanVar(value=True)     # горловины на двух листах
+        self.sheet_fmt = tk.StringVar(value='A3')
 
         self._build()
         self._bind_keys()
@@ -159,7 +163,8 @@ class App(ctk.CTk):
         self.menu_items: list[ctk.CTkButton] = []
         for text, key, cmd in (('Расставить заново', 'Ctrl+R', self.recompute),
                                ('Сохранить отчёт', '', self.save_report),
-                               ('Экспорт PNG', 'Ctrl+S', self.save_png)):
+                               ('Экспорт PNG', 'Ctrl+S', self.save_png),
+                               ('Печать на 2 листа (PDF)', 'Ctrl+P', self.save_sheets)):
             row = ctk.CTkButton(m, text=f'{text}', anchor='w', height=36, width=236,
                                 font=font(13), corner_radius=8, fg_color='transparent',
                                 hover_color=SURFACE_2, text_color=TEXT,
@@ -227,6 +232,19 @@ class App(ctk.CTk):
         self.src_info = ctk.CTkLabel(src, text='', font=font(12), text_color=MUTED, anchor='w',
                                      justify='left')
         self.src_info.pack(fill='x', padx=16, pady=(6, 12))
+
+        sheet = Card(sb, 'Лист')
+        sheet.pack(fill='x', pady=(0, 12))
+        ctk.CTkSwitch(sheet, text='Два листа (горловины раздельно)', variable=self.two_sheets,
+                      font=font(13), text_color=TEXT, progress_color=ACCENT,
+                      command=self.relayout, switch_width=34, switch_height=18).pack(
+            anchor='w', padx=16, pady=(0, 8))
+        self.fmt_seg = ctk.CTkSegmentedButton(
+            sheet, values=['A4', 'A3', 'A2'], variable=self.sheet_fmt, font=font(12, 'bold'),
+            selected_color=ACCENT, selected_hover_color=ACCENT_HOVER,
+            unselected_color=SURFACE_2, unselected_hover_color=BORDER, fg_color=SURFACE_2,
+            text_color=('#15171A', '#E8EAED'), command=lambda _v: self.relayout())
+        self.fmt_seg.pack(fill='x', padx=16, pady=(0, 14))
 
         lay = Card(sb, 'Слои')
         lay.pack(fill='x')
@@ -375,6 +393,7 @@ class App(ctk.CTk):
         self.bind('<Control-s>', lambda e: self.save_png())
         self.bind('<Control-S>', lambda e: self.save_png())
         self.bind('<Control-r>', lambda e: self.recompute())
+        self.bind('<Control-p>', lambda e: self.save_sheets())
         for key, f in (('<plus>', 1.4), ('<equal>', 1.4), ('<KP_Add>', 1.4),
                        ('<minus>', 1 / 1.4), ('<KP_Subtract>', 1 / 1.4)):
             self.cv.bind(key, lambda e, f=f: self.zoom_center(f))
@@ -453,11 +472,12 @@ class App(ctk.CTk):
     def load(self, path: str):
         self._show_overlay('Распознаю схему…', os.path.basename(path), busy=True)
         self.set_status('Распознавание: бинаризация, скелет, граф путей, компоновка, стыки…')
+        fmt = self.sheet_fmt.get() if self.two_sheets.get() else None
 
         def work():
             try:
                 parsed = parse_image(path)
-                st, annots = build_station(parsed['graph'], parsed['annots'])
+                st, annots = build_station(parsed['graph'], parsed['annots'], sheet_fmt=fmt)
                 self.after(0, lambda: self._loaded(path, parsed, st, annots))
             except Exception as ex:                 # показываем ошибку, а не падаем
                 msg = str(ex)
@@ -480,6 +500,12 @@ class App(ctk.CTk):
         self.redraw()
         self.set_status()
 
+    def relayout(self):
+        """Сменился режим листов/формат – перекомпоновать схему (распознавание заново)."""
+        self.fmt_seg.configure(state='normal' if self.two_sheets.get() else 'disabled')
+        if self.path:
+            self.load(self.path)
+
     def recompute(self):
         if not self.st:
             return
@@ -501,6 +527,23 @@ class App(ctk.CTk):
         img, _ = self._render((3200, 1800), None)
         img.save(p)
         self.show_toast(f'Сохранено: {os.path.basename(p)}')
+
+    def save_sheets(self):
+        """PDF из двух листов в натуральную величину, разрез у оси станции."""
+        if not self.st:
+            return
+        base = os.path.splitext(os.path.basename(self.path or 'схема'))[0]
+        p = filedialog.asksaveasfilename(defaultextension='.pdf',
+                                         initialfile=f'{base}_2_листа.pdf',
+                                         filetypes=[('PDF', '*.pdf')])
+        if not p:
+            return
+        pages = make_sheets(self.st, self.annots if self.layers['annots'].get() else (),
+                            show_grid=self.layers['grid'].get(),
+                            show_letters=self.layers['letters'].get(), title=base,
+                            fmt=self.sheet_fmt.get() if self.two_sheets.get() else None)
+        save_pdf(pages, p)
+        self.show_toast(f'Сохранено: {os.path.basename(p)} (2 листа, М 1:1)')
 
     def save_report(self):
         if not self.st:

@@ -179,27 +179,89 @@ def fit_view(st: Station, size, annots=()):
     return k, (W - (x1 - x0) * k) / 2 - x0 * k, (H - (y1 - y0) * k) / 2 - y0 * k
 
 
+class Recorder:
+    """Подмена ImageDraw: вместо рисования записывает векторные примитивы.
+    Координаты приходят в пикселях при REC_PX пикселей на мм и пишутся в мм –
+    так Flutter-клиент рисует ту же схему векторно, без дублирования логики."""
+
+    def __init__(self, px_per_mm: float):
+        self.k = 1.0 / px_per_mm
+        self.items: list[dict] = []
+        self._probe = ImageDraw.Draw(Image.new('L', (1, 1)))
+        self.tag = ''                            # слой, к которому относятся примитивы
+
+    @staticmethod
+    def _col(c):
+        if c is None:
+            return None
+        if isinstance(c, str):
+            return {'black': '#000000', 'white': '#ffffff'}.get(c, c)
+        return '#%02x%02x%02x' % tuple(c[:3])
+
+    def _pts(self, xy):
+        return [[round(x * self.k, 3), round(y * self.k, 3)] for x, y in xy]
+
+    def line(self, xy, fill=None, width=1):
+        self.items.append({'t': 'line', 'p': self._pts(xy), 'c': self._col(fill),
+                           'w': round(width * self.k, 3), 'g': self.tag})
+
+    def polygon(self, xy, fill=None, outline=None, width=1):
+        self.items.append({'t': 'poly', 'p': self._pts(xy), 'f': self._col(fill),
+                           'c': self._col(outline), 'w': round(width * self.k, 3), 'g': self.tag})
+
+    def ellipse(self, box, fill=None, outline=None, width=1):
+        x0, y0, x1, y1 = box
+        self.items.append({'t': 'circle', 'x': round((x0 + x1) / 2 * self.k, 3),
+                           'y': round((y0 + y1) / 2 * self.k, 3),
+                           'r': round((x1 - x0) / 2 * self.k, 3), 'f': self._col(fill),
+                           'c': self._col(outline), 'w': round(width * self.k, 3), 'g': self.tag})
+
+    def rectangle(self, box, fill=None, outline=None, width=1):
+        x0, y0, x1, y1 = box
+        self.polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], fill=fill, outline=outline,
+                     width=width)
+
+    def text(self, xy, text, fill=None, font=None, anchor='la'):
+        size = getattr(font, 'size', 10)
+        self.items.append({'t': 'text', 'x': round(xy[0] * self.k, 3),
+                           'y': round(xy[1] * self.k, 3), 's': text,
+                           'h': round(size * self.k, 3), 'a': anchor, 'c': self._col(fill),
+                           'g': self.tag})
+
+    def textbbox(self, xy, text, font=None, anchor='la'):
+        return self._probe.textbbox(xy, text, font=font, anchor=anchor)
+
+
+REC_PX = 10.0          # пикселей на мм при записи (шрифты PIL – целые, точность 0,1 мм)
+
+
 def render(st: Station, size, *, show_joints=True, show_letters=False,
            show_numbers=True, show_sections=False, show_section_names=False,
            show_annots=True, annots=(), view=None, highlight=None, show_grid=False,
-           show_signals=True):
+           show_signals=True, record: Recorder | None = None):
     """Возвращает (PIL.Image, transform), transform: модель -> экран (k, ox, oy).
-    view=(k, ox, oy) – заданный масштаб/сдвиг (зум); None – вписать всю схему."""
+    view=(k, ox, oy) – заданный масштаб/сдвиг (зум); None – вписать всю схему.
+    record – записать векторные примитивы в мм вместо картинки (см. scene.py)."""
     g = st.g
     W, H = size
+    ss = 2                                  # суперсэмплинг для гладких линий
+    if record is not None:                  # запись: 1 мм = REC_PX px, без сдвига
+        view = (REC_PX / ss / (st.u / 10.0), 0.0, 0.0)
+        show_grid = show_annots = False     # сетку и надписи клиент рисует сам
     if view is None:
         view = fit_view(st, size, annots if show_annots else ())
     k, ox, oy = view
 
-    ss = 2                                  # суперсэмплинг для гладких линий
-    img = Image.new('RGB', (W * ss, H * ss), 'white')
-    d = ImageDraw.Draw(img)
+    img = Image.new('RGB', (1, 1) if record is not None else (W * ss, H * ss), 'white')
+    d = record if record is not None else ImageDraw.Draw(img)
     mm = st.u / 10.0 * k * ss               # экранных пикселей в 1 мм
 
     def S(x, y):
         return (x * k + ox) * ss, (y * k + oy) * ss
 
     def lw(v):
+        if record is not None:
+            return v * mm                   # вектор: толщина без округления
         return max(1, int(round(v * mm)))
 
     # миллиметровка: 1 мм – тонкие, 5 мм – средние, 10 мм (клетка = междупутье) – жирные
@@ -240,6 +302,8 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             px, py = S(a.x0, a.y0)
             img.paste((60, 60, 60), (int(px), int(py)), glyph)
 
+    if record is not None:
+        record.tag = 'tracks'
     # пути
     if st.sections and show_sections:
         cols = _palette(len(st.sections))
@@ -257,6 +321,8 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
         e = g.edges[highlight]
         d.line([S(*g.pos(e.a)), S(*g.pos(e.b))], fill=(255, 150, 0), width=lw(1.5))
 
+    if record is not None:
+        record.tag = 'tracks'
     # тупиковые упоры ']'
     for n in g.nodes.values():
         if g.degree(n.id) != 1 or n.mark != 'tupik':
@@ -275,6 +341,8 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             d.text((cx - dx * 2.5 * mm, cy), n.label, fill='black',
                    font=_font(FONT_LETTER * 1.2 * mm), anchor='rm' if dx > 0 else 'lm')
 
+    if record is not None:
+        record.tag = 'numbers'
     # ось станции и номера путей с указанием специализации (п. 2.2): пути обезличены –
     # стрелки в обе стороны, номер пути – над стрелками
     named = [l for l in st.lines if 'name' in l and l.get('central') in g.edges]
@@ -290,6 +358,8 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
         lo = max(v[0] for v in free.values())
         hi = min(v[1] for v in free.values())
         ax = (lo + hi) / 2 if lo < hi else st.xc
+        if st.sheet_cut is not None and lo < st.sheet_cut - 30 < hi:
+            ax = st.sheet_cut - 30          # два листа: ось – на листе 1, не на линии склейки
         xs = S(ax, 0)[0]
         ys = [l['y'] for l in named]
         y_top, y_bot = S(0, min(ys) - 6)[1], S(0, max(ys) + 6)[1]
@@ -298,17 +368,18 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             d.line([(xs, yy), (xs, min(yy + dash, y_bot))], fill='black', width=lw(0.2))
             yy += dash * 1.8
         f_tr = _font(FONT_LETTER * 1.2 * mm)
-        for l in named:
-            a0, a1 = free[id(l)]
-            mx = ax if a0 + 3 <= ax <= a1 - 3 else (a0 + a1) / 2
-            if True:
-                cx, cy = S(mx, l['y'])
-                a, h = 2.2 * mm, 0.9 * mm
-                for sgn in (-1, 1):             # ◀▶
-                    d.polygon([(cx + sgn * 0.3 * mm, cy - h), (cx + sgn * (0.3 * mm + a), cy),
-                               (cx + sgn * 0.3 * mm, cy + h)], fill='black')
-                d.text((cx - 1.0 * mm, cy - 2.2 * mm), f"{l['name']}П", fill='black',
-                       font=f_tr, anchor='rb')
+        for l in named:                         # обозначение пути – на оси (рис. 2.18)
+            cx, cy = S(ax, l['y'])
+            a, h = 2.2 * mm, 0.9 * mm
+            for sgn in (-1, 1):                 # ◀▶ – путь обезличен
+                d.polygon([(cx + sgn * 0.3 * mm, cy - h), (cx + sgn * (0.3 * mm + a), cy),
+                           (cx + sgn * 0.3 * mm, cy + h)], fill='black')
+            label = f"{l['name']}П"
+            ty = cy - 2.0 * mm
+            box = d.textbbox((cx, ty), label, font=f_tr, anchor='mb')
+            d.rectangle([box[0] - 0.4 * mm, box[1] - 0.2 * mm, box[2] + 0.4 * mm, box[3]],
+                        fill='white')           # ось не перечёркивает номер
+            d.text((cx, ty), label, fill='black', font=f_tr, anchor='mb')
 
     f_num = _font(FONT_NUM * mm)
     f_letter = _font(FONT_LETTER * mm)
@@ -317,6 +388,8 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
         from signals import footprint
         sig_boxes = [footprint(st, s) for s in getattr(st, 'signals', [])]
 
+    if record is not None:
+        record.tag = 'switches'
     # стрелки (прил. 1): со стороны остряков, на стороне ответвления –
     # закрашенный прямоугольник 3×1 мм и тонкая линия 5 мм
     for s, info in st.sw.items():
@@ -367,6 +440,8 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             py = cy + ty * along * mm + side * ny * 3.0 * mm
             d.text((px, py), n.number, fill='black', font=f_num, anchor='mm')
 
+    if record is not None:
+        record.tag = 'joints'
     # стыки (прил. 1): 2 мм высота, полочки 2 мм; негабаритный – в окружности Ø6
     sig_side = {}                                   # стык -> сторона, где стоит светофор
     if show_signals:
@@ -400,6 +475,8 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
                 d.text((cx + nx * off, cy + ny * off), j.rule,
                        fill=BLUE if j.rule != 'р' else RED, font=f_letter, anchor='mm')
 
+    if record is not None:
+        record.tag = 'signals'
     # светофоры
     if show_signals:
         f_sig = _font(FONT_LETTER * 1.2 * mm)
@@ -407,6 +484,16 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
         for s in getattr(st, 'signals', []):
             _draw_signal(d, st, s, S, mm, lw, f_sig, f_two)
 
+    # линия склейки двух листов (режим «Два листа»); клиент рисует её сам
+    if st.sheet_cut is not None and record is None:
+        cx = S(st.sheet_cut, 0)[0]
+        yy, dash = 0.0, 2.5 * mm
+        while yy < H * ss:
+            d.line([(cx, yy), (cx, min(yy + dash, H * ss))], fill=(200, 30, 30), width=lw(0.3))
+            yy += dash * 1.8
+
+    if record is not None:
+        record.tag = 'sections'
     # имена участков
     if show_section_names:
         f_sec = _font(FONT_SEC * mm)
@@ -418,5 +505,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             cx, cy = S(*g.point_on(e, (p['t0'] + p['t1']) / 2))
             d.text((cx, cy + 3.0 * mm), s['name'], fill=(0, 120, 60), font=f_sec, anchor='mm')
 
+    if record is not None:
+        return img, (k, ox, oy)
     img = img.resize((W, H), Image.Resampling.LANCZOS)
     return img, (k, ox, oy)
