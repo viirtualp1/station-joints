@@ -76,7 +76,7 @@ cd app_flutter && flutter test   # интерфейс с настоящим бэ
 
 CI/CD – GitHub Actions (`.github/workflows/`):
 
-- **CI** (`ci.yml`) – на каждый push и pull request: `pytest`, `flutter analyze`, `flutter test`.
+- **CI** (`ci.yml`) – на каждый pull request и push в `main`: `pytest`, `flutter analyze`, `flutter test`.
 - **Release** (`release.yml`) – собирает установщик на Windows и выкладывает выпуск.
 
 Выпустить новую версию:

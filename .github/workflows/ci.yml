@@ -5,13 +5,12 @@ name: CI
 
 on:
   push:
-    branches: ['**']
-    tags-ignore: ['v*']        # теги выпуска проверяет release.yml
+    branches: [main]           # ветки с правками проверяются в pull request – без двойных прогонов
   pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
