@@ -1,0 +1,67 @@
+# Выпуск: git tag vX.Y.Z && git push origin vX.Y.Z
+# На Windows собираются бэкенд (PyInstaller), интерфейс (Flutter) и установщик
+# (Inno Setup) – python build.py; результат выкладывается в GitHub Releases.
+# Установленные программы находят выпуск сами (update.dart: releases/latest,
+# файл StationJoints-Setup-*.exe).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:           # ручной запуск – только сборка, без выпуска
+
+permissions:
+  contents: write              # создать выпуск и загрузить файлы
+
+jobs:
+  build:
+    name: Сборка установщика (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Версия тега = версия в pubspec.yaml
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          v=$(sed -nE 's/^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' app_flutter/pubspec.yaml)
+          if [ "${GITHUB_REF_NAME#v}" != "$v" ]; then
+            echo "::error::Тег $GITHUB_REF_NAME, а в app_flutter/pubspec.yaml версия $v – поднимите version: и перевыпустите тег"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements-dev.txt
+      - name: Тесты бэкенда перед сборкой
+        run: python -m pytest -q
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.5
+          channel: stable
+          cache: true
+
+      - name: Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Сборка (build.py)
+        run: python build.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StationJoints
+          path: |
+            dist/StationJoints-Setup-*.exe
+            dist/StationJoints-win64.zip
+          if-no-files-found: error
+
+      - name: Выпуск на GitHub
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/StationJoints-Setup-*.exe
+            dist/StationJoints-win64.zip
+          generate_release_notes: true

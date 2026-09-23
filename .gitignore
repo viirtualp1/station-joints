@@ -1,6 +1,7 @@
 __pycache__
 .pytest_cache/
 .env
+.vscode/
 build/
 dist/
 .build-venv/

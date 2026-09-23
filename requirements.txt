@@ -1,3 +1,5 @@
+# Зависимости для запуска из исходников. Сборка (build.py) ставит свои в .build-venv,
+# тесты и CI – requirements-dev.txt; customtkinter нужен только старому интерфейсу app.py.
 opencv-python-headless
 numpy
 pillow
