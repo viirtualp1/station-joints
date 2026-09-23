@@ -113,6 +113,7 @@ def spread_to_sheets(st: Station, fmt: str) -> bool:
 def to_grid(st: Station):
     g = st.g
     u = st.u
+    st.orig_x = {n.id: n.x for n in g.nodes.values()}
     x0 = min(n.x for n in g.nodes.values())
     y0 = min(n.y for n in g.nodes.values())
     # уровни путей -> целые клетки: каждый уровень строго на линии 10 мм,
@@ -183,7 +184,7 @@ def refresh(st: Station):
         l['x0'] = min(g.nodes[n].x for n in l['nodes'])
         l['x1'] = max(g.nodes[n].x for n in l['nodes'])
         l['y'] = g.nodes[l['nodes'][0]].y
-        l['nodes'].sort(key=lambda n: g.nodes[n].x)
+        l['nodes'].sort(key=st.xkey)
     st.sw.clear()
     _switch_geometry(st)
     _find_center_named(st)
@@ -203,7 +204,7 @@ def _required(st: Station, e) -> float:
     """Минимальная длина горизонтального отрезка e, чтобы на нём разошлись
     его стыки с нормативными расстояниями от стрелок."""
     g = st.g
-    a, b = (e.a, e.b) if g.nodes[e.a].x <= g.nodes[e.b].x else (e.b, e.a)
+    a, b = (e.a, e.b) if st.xkey(e.a) <= st.xkey(e.b) else (e.b, e.a)
     need = MIN_EDGE
     if a in st.sw and b in st.sw:
         need = MIN_SW
@@ -263,7 +264,7 @@ def relax(st: Station) -> bool:
     for e in g.edges.values():
         na, nb = g.nodes[e.a], g.nodes[e.b]
         if abs(na.y - nb.y) < 1e-6:
-            a, b = (e.a, e.b) if na.x <= nb.x else (e.b, e.a)
+            a, b = (e.a, e.b) if st.xkey(e.a) <= st.xkey(e.b) else (e.b, e.a)
             cons.append((a, b, snap(_required(st, e), up=True)))
         else:
             d = diag_dx(st, e)                  # единый наклон 10:15
@@ -275,7 +276,7 @@ def relax(st: Station) -> bool:
         rows.setdefault(round(n.y * 2), []).append(n.id)
     linked = {frozenset((e.a, e.b)) for e in g.edges.values()}
     for ids in rows.values():
-        ids.sort(key=lambda n: g.nodes[n].x)
+        ids.sort(key=st.xkey)
         for a, b in zip(ids, ids[1:]):
             if frozenset((a, b)) not in linked:
                 cons.append((a, b, snap(MIN_GAP, up=True)))

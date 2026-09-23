@@ -64,6 +64,12 @@ class Station:
     diag_dir: dict = field(default_factory=dict)    # edge id -> направление диагонали
     geom_check: tuple | None = None                 # (плохие углы, узлы вне сетки)
     tupik_labels: dict = field(default_factory=dict)  # конец -> номер по исходному рисунку
+    orig_x: dict = field(default_factory=dict)      # узел -> x на исходном рисунке (порядок)
+
+    def xkey(self, n: int):
+        """Порядок узлов слева направо: по x, при равенстве – как на исходном рисунке
+        (округление на сетку может свести две близкие стрелки в одну ординату)."""
+        return self.g.nodes[n].x, self.orig_x.get(n, 0.0)
     slope_ok: bool = True                           # удалось выдержать наклон диагоналей
     entry_check: list = field(default_factory=list)  # (сигнал, ok, первая стрелка)
     safety: dict = field(default_factory=dict)      # конец предохранительного тупика -> стрелка

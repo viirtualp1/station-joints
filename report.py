@@ -1,9 +1,10 @@
 """Текстовый отчёт по схеме (cli.py, старый интерфейс app.py): стрелки, въезды,
-самопроверка по методичке, светофоры, обоснование стыков, участки."""
+самопроверка по методичке, светофоры, маршруты, обоснование стыков, участки."""
 from __future__ import annotations
 
 from checks import audit_text
 from joints import Station, _nm, _numkey
+from routes import route_rows
 from signals import report_signals
 
 
@@ -34,6 +35,15 @@ def report(st: Station) -> str:
         out.append(f'Светофоры ({len(st.signals)}):')
         out += report_signals(st)
         out.append('')
+    routes = route_rows(st)
+    out.append(f'Маршруты ({len(routes)}): основных поездных – '
+               f'{sum(r["kind"] != "маневровый" and not r["variant"] for r in routes)}, '
+               f'вариантных – {sum(r["kind"] != "маневровый" and r["variant"] for r in routes)}, '
+               f'маневровых – {sum(r["kind"] == "маневровый" for r in routes)}')
+    for r in routes:
+        sw = ', '.join(r['key'] if r['variant'] else r['switches'])
+        out.append(f"  {r['no']:>3}. {r['signal']:<5} {r['name']:<14} {r['note']:<15} {sw}".rstrip())
+    out.append('')
     out.append('Обоснование стыков:')
     out += st.log
     out.append('')

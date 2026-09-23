@@ -18,7 +18,7 @@ from vedomost import save_docx
 EXPECTED = {
     'var91': dict(switches=34, joints=58, signals=33),
     'var96': dict(switches=29, joints=55, signals=33),
-    'var97': dict(switches=34, joints=59, signals=32),
+    'var97': dict(switches=34, joints=60, signals=32),
 }
 
 
@@ -46,6 +46,23 @@ def test_two_sheets_audit_ok(fmt):
 def test_odd_left_audit_ok(sample):
     st, _ = built(sample, odd_right=False)
     assert [what for ok, what, _ in audit(st) if not ok] == []
+
+
+def test_layout_keeps_topology(sample):
+    """Перенос на сетку и раздвижка не меняют порядок узлов: ни один узел не оказывается
+    посреди чужого ребра (было на var97: две близкие стрелки менялись местами)."""
+    import math
+    st, _ = built(sample)
+    g = st.g
+    for e in g.edges.values():
+        (ax, ay), (bx, by) = g.pos(e.a), g.pos(e.b)
+        L2 = (bx - ax) ** 2 + (by - ay) ** 2
+        for n in g.nodes.values():
+            if n.id in (e.a, e.b):
+                continue
+            t = ((n.x - ax) * (bx - ax) + (n.y - ay) * (by - ay)) / L2
+            if 0.01 < t < 0.99:
+                assert math.hypot(n.x - ax - t * (bx - ax), n.y - ay - t * (by - ay)) > 0.5, (e.id, n.id)
 
 
 def test_deterministic(sample):

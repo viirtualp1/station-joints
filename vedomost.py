@@ -1,5 +1,6 @@
 """Ведомость для пояснительной записки – документ Word (.docx) с таблицами:
-стрелки, изолированные участки, светофоры, изолирующие стыки.
+стрелки, изолированные участки, светофоры, изолирующие стыки и маршруты
+(основные и вариантные поездные, простые маневровые – как табл. 3.1–3.3 пособия).
 
 Файл собирается вручную (WordprocessingML в zip) – без python-docx и lxml,
 чтобы не утяжелять сборку. Шрифт Times New Roman 12 (14 – заголовки)."""
@@ -10,6 +11,7 @@ import zipfile
 from xml.sax.saxutils import escape
 
 from joints import Station
+from routes import route_rows
 from tables import joint_rows, section_rows, signal_table, switch_rows
 
 _CT = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -127,6 +129,33 @@ def build(st: Station, title: str = '') -> str:
                          'негабаритный' if r['negab'] else 'габаритный', r['why'] or '–']
                         for i, r in enumerate(js)],
                        [12, 22, 60, 26, 51], {0, 1, 3}))
+
+    routes = route_rows(st)
+    train = [r for r in routes if r['kind'] != 'маневровый']
+    main = [r for r in train if not r['variant']]
+    caption(f'Основные поездные маршруты ({len(main)})')
+    body.append(_table(['№', 'Горловина', 'Маршрут', 'Наименование', 'Светофор', 'Стрелки', 'Примечание'],
+                       [[r['no'], _short(r['throat']), r['kind'], r['name'], r['signal'],
+                         ', '.join(r['switches']), r['note']] for r in main],
+                       [10, 20, 24, 26, 18, 52, 20], {0, 4}))
+    var = [r for r in train if r['variant']]
+    if var:
+        caption(f'Вариантные поездные маршруты ({len(var)})')
+        body.append(_table(['№', 'Горловина', 'Маршрут', 'Наименование', 'Светофор',
+                            'Стрелки, определяющие маршрут', 'Примечание'],
+                           [[r['no'], _short(r['throat']), r['kind'], r['name'], r['signal'],
+                             ', '.join(r['key']), r['note']] for r in var],
+                           [10, 20, 24, 26, 18, 52, 20], {0, 4}))
+    shunt = [r for r in routes if r['kind'] == 'маневровый']
+    caption(f'Простые маневровые маршруты ({len(shunt)})')
+    body.append(_table(['№', 'Горловина', 'От светофора', 'Наименование', 'Стрелки, определяющие маршрут'],
+                       [[r['no'], _short(r['throat']), r['signal'], r['name'],
+                         ', '.join(r['key']) if r['variant'] else '–'] for r in shunt],
+                       [10, 24, 26, 30, 80], {0, 2}))
+    body.append(_p('Плюс – стрелка по прямому ходу, минус – по ответвлению; стрелки съездов '
+                   'спаренные (14/16). Охранные стрелки и негабаритные участки, контролируемые '
+                   'в маршрутах (табл. 2.1 пособия), программа не определяет – дополните вручную.',
+                   size=20, after=120))
 
     body.append(_p(f'Сформировано программой «Стыки» {time.strftime("%d.%m.%Y")}.', size=20))
     # A4 книжная, поля: левое 30 мм, правое 10, верх/низ 20 (ГОСТ 7.32)

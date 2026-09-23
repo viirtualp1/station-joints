@@ -1,5 +1,6 @@
 """Схема станции как JSON-сцена для клиента (Flutter): векторные примитивы в мм
-плюс объекты для взаимодействия (стыки, пути, светофоры, участки) и замечания самопроверки.
+плюс объекты для взаимодействия (стыки, пути, светофоры, участки, маршруты) и замечания
+самопроверки.
 
 Чертёж рисует render.py в режиме записи – размеры обозначений (прил. 1) остаются
 в одном месте, клиент только отображает примитивы."""
@@ -14,6 +15,7 @@ from PIL import Image
 from edits import chain
 from joints import RULE_TEXT, Station
 from render import LAYERS, REC_PX, Recorder, layer_flags, render
+from routes import route_rows
 from signals import KIND_TEXT, drawing_bounds, footprint, signal_rows
 from tables import issues, section_rows
 
@@ -80,6 +82,7 @@ def build_scene(st: Station, annots=(), layers: dict | None = None) -> dict:
         'nodes': nodes,
         'layers': lay,
         'sections': section_rows(st),
+        'routes': route_rows(st),
         'issues': issues(st),
         'odd_right': st.odd_right,
         'signal_kinds': KIND_TEXT,               # коды типов светофоров -> подписи (для правки)
