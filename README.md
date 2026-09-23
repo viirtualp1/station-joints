@@ -77,7 +77,12 @@ cd app_flutter && flutter test   # интерфейс с настоящим бэ
 CI/CD – GitHub Actions (`.github/workflows/`):
 
 - **CI** (`ci.yml`) – на каждый pull request и push в `main`: `pytest`, `flutter analyze`, `flutter test`.
-- **Release** (`release.yml`) – собирает установщик на Windows и выкладывает выпуск.
+- **Installer** (`installer.yml`) – сборка установщика на Windows (`build.py`):
+  - в каждом pull request – тестовая сборка: в PR появляется комментарий «Test build» со
+    ссылками на `StationJoints-Setup-*.exe` и портативный архив (скачать – войдя в GitHub,
+    ссылки живут 30 дней); после каждого push комментарий обновляется, при ошибке сборки
+    в нём предупреждение и ссылка на лог;
+  - по тегу `vX.Y.Z` – выпуск в GitHub Releases.
 
 Выпустить новую версию:
 
@@ -87,9 +92,8 @@ CI/CD – GitHub Actions (`.github/workflows/`):
    git tag v2.3.0
    git push origin main v2.3.0
    ```
-3. через ~15 минут в [Releases](https://github.com/viirtualp1/station-joints/releases) появятся
+3. через ~10 минут в [Releases](https://github.com/viirtualp1/station-joints/releases) появятся
    `StationJoints-Setup-2.3.0.exe` и архив; установленные программы предложат обновиться сами.
 
 Если тег не совпадает с версией в `pubspec.yaml`, выпуск остановится с понятной ошибкой.
-Собрать установщик без выпуска – Actions → Release → Run workflow (файлы – в артефактах запуска);
-в pull request, где меняется сборка (`build.py`, `installer.iss`, `pubspec.yaml`…), она запускается сама.
+Собрать установщик вручную – Actions → Installer → Run workflow (файлы – в артефактах запуска).
