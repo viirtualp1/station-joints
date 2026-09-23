@@ -91,4 +91,5 @@ CI/CD – GitHub Actions (`.github/workflows/`):
    `StationJoints-Setup-2.3.0.exe` и архив; установленные программы предложат обновиться сами.
 
 Если тег не совпадает с версией в `pubspec.yaml`, выпуск остановится с понятной ошибкой.
-Собрать установщик без выпуска – Actions → Release → Run workflow (файлы – в артефактах запуска).
+Собрать установщик без выпуска – Actions → Release → Run workflow (файлы – в артефактах запуска);
+в pull request, где меняется сборка (`build.py`, `installer.iss`, `pubspec.yaml`…), она запускается сама.

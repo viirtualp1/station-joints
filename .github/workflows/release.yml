@@ -8,6 +8,15 @@ name: Release
 on:
   push:
     tags: ['v*']
+  pull_request:                # правки сборки проверяются в PR – только сборка, без выпуска
+    paths:
+      - build.py
+      - installer.iss
+      - tools/make_icon.py
+      - requirements-dev.txt
+      - app_flutter/pubspec.yaml
+      - app_flutter/windows/**
+      - .github/workflows/release.yml
   workflow_dispatch:           # ручной запуск – только сборка, без выпуска
 
 permissions:
