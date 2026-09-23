@@ -1,14 +1,13 @@
-# Выпуск: git tag vX.Y.Z && git push origin vX.Y.Z
-# На Windows собираются бэкенд (PyInstaller), интерфейс (Flutter) и установщик
-# (Inno Setup) – python build.py; результат выкладывается в GitHub Releases.
-# Установленные программы находят выпуск сами (update.dart: releases/latest,
-# файл StationJoints-Setup-*.exe).
+# Release: git tag vX.Y.Z && git push origin vX.Y.Z
+# Builds the backend (PyInstaller), the UI (Flutter) and the installer (Inno Setup) on
+# Windows with `python build.py` and publishes them as a GitHub release. Installed apps
+# find it themselves (update.dart: releases/latest, asset StationJoints-Setup-*.exe).
 name: Release
 
 on:
   push:
     tags: ['v*']
-  pull_request:                # правки сборки проверяются в PR – только сборка, без выпуска
+  pull_request:                # a PR that touches the build is built too (no publishing)
     paths:
       - build.py
       - installer.iss
@@ -17,33 +16,35 @@ on:
       - app_flutter/pubspec.yaml
       - app_flutter/windows/**
       - .github/workflows/release.yml
-  workflow_dispatch:           # ручной запуск – только сборка, без выпуска
+  workflow_dispatch:           # manual run: build only, no publishing
 
 permissions:
-  contents: write              # создать выпуск и загрузить файлы
+  contents: write              # create the release and upload its files
 
 jobs:
   build:
-    name: Сборка установщика (Windows)
+    name: Installer (Windows)
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'          # build messages are Russian; the runner console is cp1252
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Версия тега = версия в pubspec.yaml
+      - name: Tag matches the version in pubspec.yaml
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           v=$(sed -nE 's/^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' app_flutter/pubspec.yaml)
           if [ "${GITHUB_REF_NAME#v}" != "$v" ]; then
-            echo "::error::Тег $GITHUB_REF_NAME, а в app_flutter/pubspec.yaml версия $v – поднимите version: и перевыпустите тег"
+            echo "::error::Tag is $GITHUB_REF_NAME but app_flutter/pubspec.yaml says $v – bump version: and re-tag"
             exit 1
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - run: pip install -r requirements-dev.txt
-      - name: Тесты бэкенда перед сборкой
+      - name: Backend tests before building
         run: python -m pytest -q
 
       - uses: subosito/flutter-action@v2
@@ -52,10 +53,10 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Inno Setup
+      - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
-      - name: Сборка (build.py)
+      - name: Build (build.py)
         run: python build.py
 
       - uses: actions/upload-artifact@v4
@@ -66,7 +67,7 @@ jobs:
             dist/StationJoints-win64.zip
           if-no-files-found: error
 
-      - name: Выпуск на GitHub
+      - name: Publish the GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:

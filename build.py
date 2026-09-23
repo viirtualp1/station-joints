@@ -131,4 +131,8 @@ def build_flutter():
 
 
 if __name__ == '__main__':
+    # сообщения – по-русски: консоль с другой кодовой страницей (cp1252 на CI) не должна
+    # ронять сборку на print
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[union-attr]
     build_flutter()

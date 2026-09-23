@@ -1,11 +1,11 @@
-# Проверки на каждый push и pull request: тесты бэкенда (Python) и интерфейса (Flutter).
-# Интеграционный тест интерфейса (test/visual_test.dart) запускает настоящий бэкенд,
-# поэтому в job Flutter тоже ставится Python с зависимостями.
+# Checks for every pull request and every push to main: backend tests (Python) and
+# UI analysis/tests (Flutter). The UI integration test (test/visual_test.dart) starts
+# the real backend, so the Flutter job installs Python and its dependencies too.
 name: CI
 
 on:
   push:
-    branches: [main]           # ветки с правками проверяются в pull request – без двойных прогонов
+    branches: [main]           # feature branches are checked in their pull request
   pull_request:
   workflow_dispatch:
 
@@ -15,11 +15,11 @@ concurrency:
 
 jobs:
   python:
-    name: Бэкенд (pytest)
+    name: Backend (pytest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
@@ -28,20 +28,21 @@ jobs:
       - run: python -m pytest -q
 
   flutter:
-    name: Интерфейс (analyze + test)
+    name: UI (analyze + test)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: app_flutter
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: requirements-dev.txt
       - run: pip install -r ../requirements-dev.txt
-      - run: sudo apt-get install -y --no-install-recommends fonts-liberation fonts-dejavu-core
+      - name: Fonts for the UI test (metric-compatible with Arial / Consolas)
+        run: sudo apt-get install -y --no-install-recommends fonts-liberation fonts-dejavu-core
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.5
