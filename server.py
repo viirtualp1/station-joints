@@ -6,7 +6,7 @@
 Служебные: ping, sample, new_doc, close_doc. Команды документа (параметр doc – номер
 таба из new_doc): load, restore, relayout, scene, recompute, add_joint, remove_joint,
 toggle_negab, move_joint, edit_track, edit_signal, add_signal, reset_signal, explain,
-undo, redo, save_project, set_project, thumb, export_png, export_pdf, export_docx.
+undo, redo, save_project, set_project, thumb, export_png, export_pdf, export_docx, export_vsdx.
 Команды, меняющие схему, возвращают новую сцену (см. scene.py)."""
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from scene import LAYERS, build_scene
 from sheets import make_sheets, save_pdf
 from signals import place_signals
 from vedomost import save_docx
+from visio import save_vsdx
 
 VERSION = 5
 HISTORY = 100                            # шагов отмены
@@ -435,6 +436,14 @@ class Session:
         save_docx(self._need(), path, title)
         return {'path': path}
 
+    def export_vsdx(self, path: str, title: str = ''):
+        """Схема в Microsoft Visio: фигуры со свойствами, слои, масштаб 1:1."""
+        L = self.layers
+        info = save_vsdx(self._need(), path, title=title or os.path.splitext(self.src_name)[0],
+                         layers={k: L[k] for k in ('joints', 'signals', 'numbers', 'letters',
+                                                   'sections', 'section_names')})
+        return {'path': path, **info}
+
 
 # команды документа (всё, кроме служебных) – у каждого открытого таба своя сессия
 DOC_COMMANDS = {'load': 'load', 'relayout': 'relayout', 'scene': 'scene_cmd',
@@ -445,7 +454,8 @@ DOC_COMMANDS = {'load': 'load', 'relayout': 'relayout', 'scene': 'scene_cmd',
                 'edit_signal': 'edit_signal', 'add_signal': 'add_signal',
                 'reset_signal': 'reset_signal', 'explain': 'explain',
                 'save_project': 'save_project', 'set_project': 'set_project', 'thumb': 'thumb', 'export_png': 'export_png',
-                'export_pdf': 'export_pdf', 'export_docx': 'export_docx'}
+                'export_pdf': 'export_pdf', 'export_docx': 'export_docx',
+                'export_vsdx': 'export_vsdx'}
 
 
 class Server:
