@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from joints import SIG_D as SIG_LAMP
-from joints import SIG_OFF, SIG_ROW, Station
+from joints import SIG_ROW, Station
 from signals import ENTRY, EXIT_DWARF, EXIT_MAIN, footprint, geometry, offset
 
 BLUE = (20, 70, 200)
@@ -422,7 +422,6 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             # на стороне ответвления, над обозначением стрелки
             # п. 2.3: номер пишут со стороны привода – со стороны поля или широкого
             # междупутья; при равных междупутьях – напротив ответвления
-            mx_, my_ = n.x + tx * SW_BAR / 2 * st.u / 10, n.y + ty * SW_BAR / 2 * st.u / 10
             side = -1.0
             if abs(ty) < 0.2:                   # стрелка на горизонтальном пути
                 gap = {}

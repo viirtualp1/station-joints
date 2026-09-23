@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from joints import Station, _nm, _numkey, _walk_to_switch
+from joints import Station, _nm, _walk_to_switch
 from signals import _overlap, footprint
 
 

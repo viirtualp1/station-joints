@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from graph import Joint
 from joints import SIG_H, SIG_LEN, SIG_OFF, Station, _walk_to_switch, ladder_head, update_sections

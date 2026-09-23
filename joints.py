@@ -367,7 +367,6 @@ def _central_edge(st: Station, line):
 def _name_tracks(st: Station):
     """Главные: нижний – I, верхний – II (как на рис. 2.1–2.7 пособия);
     над II – чётные 4, 6…, под I – нечётные 3, 5…"""
-    g = st.g
     crossing = [l for l in st.lines if l['x0'] < st.xc < l['x1']]
     if len(st.mains) == 2:
         up, lo = st.mains
@@ -870,7 +869,6 @@ def pieces_of(st: Station):
 
 
 def compute_sections(st: Station):
-    g = st.g
     pcs = pieces_of(st)
     parent = {}
 
