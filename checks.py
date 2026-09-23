@@ -4,7 +4,8 @@
 """
 from __future__ import annotations
 
-from joints import Station, _nm, _numkey
+from joints import Station, _nm, _numkey, _walk_to_switch
+from signals import _overlap, footprint
 
 
 def _digits(name: str) -> int | None:
@@ -43,7 +44,6 @@ def audit(st: Station) -> list[tuple[bool, str, str]]:
                 bad.append(nm)
     check(not bad, '2.2 нечётные пути со стороны I, чётные – со стороны II', ', '.join(bad))
 
-    from joints import _walk_to_switch
     bad = []
     for n in g.nodes.values():
         if not n.label:
@@ -93,7 +93,7 @@ def audit(st: Station) -> list[tuple[bool, str, str]]:
     check(not bad, '2.4 е) каждая стрелка стрелочной улицы – в отдельной РЦ', ', '.join(bad))
     bad = []
     for n in g.nodes.values():
-        if g.degree(n.id) == 1 and n.mark in ('tupik', 'pp'):
+        if g.degree(n.id) == 1 and n.mark in ('tupik', 'pp') and n.id not in st.safety:
             s = secs[sec_of[n.id]] if n.id in sec_of else None
             if s and s['switches']:
                 bad.append(n.label or n.mark)
@@ -107,7 +107,7 @@ def audit(st: Station) -> list[tuple[bool, str, str]]:
     check(not bad, '2.4 б) пути станции выделены в отдельные участки', ', '.join(bad))
 
     # 2.5 светофоры
-    sigs = getattr(st, 'signals', [])
+    sigs = st.signals
     bad = [s.name for s in sigs if s.kind in ('entry', 'exit_mast', 'exit_dwarf')
            and s.joint.negab]
     check(not bad, '2.5 поездные светофоры – у габаритных стыков', ', '.join(bad))
@@ -140,16 +140,14 @@ def audit(st: Station) -> list[tuple[bool, str, str]]:
             bad.append('нечётная' if odd else 'чётная')
     check(not bad, '2.5 маневровые: нечётные/чётные по горловинам, номера растут к оси',
           ', '.join(bad))
-    from signals import _overlap, footprint
     boxes = [(s.name, footprint(st, s)) for s in sigs]
     bad = [f'{a}/{b}' for i, (a, ba) in enumerate(boxes) for b, bb in boxes[i + 1:]
            if _overlap(ba, bb)]
     check(not bad, 'чертёж: обозначения светофоров не накладываются', ', '.join(bad))
 
     # геометрия
-    chk = getattr(st, 'geom_check', None)
-    if chk is not None:
-        bad_ang, off = chk
+    if st.geom_check is not None:
+        bad_ang, off = st.geom_check
         check(not bad_ang and not off,
               'чертёж: диагонали 15×10 мм, узлы на сетке 5 мм, пути на линиях 10 мм',
               f'наклон: {bad_ang}; вне сетки: {len(off)}')

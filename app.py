@@ -21,13 +21,14 @@ from PIL import Image, ImageTk
 
 from graph import Joint
 from icons import ctk_icon, dots, replace, theme_icon
-from joints import (RULE_TEXT, Station, check_entries, compute_sections, name_sections,
-                    place_joints, report, update_negab)
+from joints import RULE_TEXT, Station, place_joints, update_negab, update_sections
 from layout import build_station, snap_joints
 from parser import parse_image
-from render import fit_view, render
+from render import fit_view, layer_flags, render
+from report import report
+from resources import resource
 from sheets import make_sheets, save_pdf
-from signals import footprint, place_signals, signal_rows
+from signals import footprint, place_signals, prune_signal_joints, signal_rows
 
 APP_NAME = 'Стыки'
 APP_SUB = 'Схема станции по методичке ДВГУПС'
@@ -44,12 +45,6 @@ ACCENT_HOVER = ('#1D4ED8', '#3B7BF0')
 OK = ('#15803D', '#34C27A')
 BAD = ('#DC2626', '#FF6B6B')
 CANVAS_BG = {'Light': '#E9EBEF', 'Dark': '#0C0D0F'}
-
-
-def resource(name: str) -> str:
-    """Путь к файлу рядом с программой (и внутри собранного exe)."""
-    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, name)
 
 
 def font(size: int = 13, weight: Literal['normal', 'bold'] = 'normal') -> ctk.CTkFont:
@@ -512,6 +507,7 @@ class App(ctk.CTk):
         place_joints(self.st)
         snap_joints(self.st)
         place_signals(self.st)
+        prune_signal_joints(self.st)
         self.refresh_panels()
         self.redraw()
         self.show_toast('Стыки и светофоры расставлены заново')
@@ -705,11 +701,7 @@ class App(ctk.CTk):
     def _render(self, size, view):
         assert self.st is not None
         o = {k: v.get() for k, v in self.layers.items()}
-        return render(self.st, size, show_grid=o['grid'], show_joints=o['joints'],
-                      show_letters=o['letters'], show_numbers=o['numbers'],
-                      show_sections=o['sections'], show_section_names=o['section_names'],
-                      show_annots=o['annots'], annots=self.annots, view=view,
-                      show_signals=o['signals'])
+        return render(self.st, size, annots=self.annots, view=view, **layer_flags(o))
 
     def _fit(self):
         assert self.st is not None
@@ -841,9 +833,7 @@ class App(ctk.CTk):
 
     def _after_edit(self):
         assert self.st is not None
-        self.st.sections = compute_sections(self.st)
-        name_sections(self.st)
-        check_entries(self.st)
+        update_sections(self.st)
         place_signals(self.st)            # светофоры стоят на стыках – пересчитать
         self.refresh_panels()
         self.redraw()

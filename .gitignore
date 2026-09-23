@@ -1,6 +1,6 @@
 __pycache__
+.pytest_cache/
 .env
-run.bat
 build/
 dist/
 .build-venv/

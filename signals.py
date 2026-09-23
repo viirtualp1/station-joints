@@ -6,7 +6,8 @@
              Название: Н/Ч по направлению отправления + номер пути (Н1, Ч3, Н6…):
              из чётной горловины отправляются нечётные – Н, из нечётной – Ч.
              С главных путей – мачтовые: Б–К–Ж–З–Ж (от мачты), остальные – карликовые
-             в два ряда: К–Б / Ж–З–заглушка. Маневровые с путей совмещены с выходными (а).
+             в два ряда (от основания): у пути заглушка–З–Ж, дальше Б–К (рис. 2.17).
+             Маневровые с путей совмещены с выходными (а).
   Маневровые (М1, М3… в нечётной горловине, М2, М4… в чётной, номера растут к оси):
      б) с тупиков и подъездных путей – у стыка, ближайшего к стрелке (стык «г»);
         с подъездного пути – мачтовый; запрещающий огонь красный (ограждают путь);
@@ -22,12 +23,14 @@ import math
 from dataclasses import dataclass, field
 
 from graph import Joint
-from joints import Station, _walk_to_switch
+from joints import SIG_H, SIG_LEN, SIG_OFF, Station, _walk_to_switch, ladder_head, update_sections
 
 # огни: Y – жёлтый, G – зелёный, R – красный, W – лунно-белый, B – синий, X – заглушка
 ENTRY = ['Y', 'G', 'R', 'Y']                  # от конца к мачте; W – отдельно на стойке
 EXIT_MAIN = ['Y', 'G', 'Y', 'R', 'W']         # от конца к мачте (прил. 1)
-EXIT_DWARF = [['R', 'W'], ['Y', 'G', 'X']]    # два ряда, от конца к основанию
+# карликовый выходной – два ряда (от конца к основанию): ближний к пути – Ж–З–заглушка,
+# дальний – К–Б (рис. 2.17: Н5, Н6, Н7, Н9); лунно-белый и зелёный – по диагонали
+EXIT_DWARF = [['Y', 'G', 'X'], ['R', 'W']]
 
 
 @dataclass
@@ -108,9 +111,7 @@ def place_signals(st: Station):
 
     # маневровые г) – для угловых заездов: перед общей стрелкой стрелочной улицы
     for c in st.ladders:
-        sws = c['switches']
-        # первая стрелка улицы – та, что стоит на главном/приёмо-отправочном пути
-        s = max(sws, key=lambda n: abs(g.nodes[n].x - st.xc))
+        s = ladder_head(st, c)
         trunk = g.edges[st.sw[s]['trunk']]
         js = [j for j in st.joints if j.edge == trunk.id]
         if not js:
@@ -146,6 +147,17 @@ def place_signals(st: Station):
     return sigs
 
 
+def prune_signal_joints(st: Station):
+    """Стык «м» ставится только под маневровый светофор; если светофор не поместился
+    (налезал на соседний) – стык не нужен. Только для автоматической расстановки:
+    стыки, которые пользователь уже видел, сами не исчезают."""
+    used = {id(s.joint) for s in st.signals}
+    keep = [j for j in st.joints if j.rule != 'м' or id(j) in used]
+    if len(keep) != len(st.joints):
+        st.joints[:] = keep
+        update_sections(st)
+
+
 def _leads_to(st, node, came_from, mark):
     """Упирается ли путь от node (не возвращаясь к came_from) в конец с отметкой mark."""
     g = st.g
@@ -178,13 +190,11 @@ def geometry(st: Station, s: Signal):
 
 def offset(s: Signal) -> float:
     """Ось светофора от оси пути; у негабаритного стыка – за его кружком (Ø6)."""
-    from joints import SIG_D, SIG_OFF
     return SIG_OFF + (1.9 if s.joint.negab else 0.0)
 
 
 def footprint(st: Station, s: Signal):
     """Габарит обозначения светофора (x0, y0, x1, y1) в мм, с подписью."""
-    from joints import SIG_H, SIG_LEN, SIG_OFF
     (x, y), (dx, dy), (nx, ny) = geometry(st, s)
     extra = offset(s) - SIG_OFF
     L = SIG_LEN[s.kind] + 0.3
@@ -197,6 +207,15 @@ def footprint(st: Station, s: Signal):
 
 def _overlap(a, b):
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def drawing_bounds(st: Station, annots=(), pad: float = 0.0):
+    """Габарит всего чертежа (пути, светофоры с подписями, надписи), мм."""
+    x0, y0, x1, y1 = st.g.bbox()
+    boxes = [footprint(st, s) for s in st.signals] + [(a.x0, a.y0, a.x1, a.y1) for a in annots]
+    for b in boxes:
+        x0, y0, x1, y1 = min(x0, b[0]), min(y0, b[1]), max(x1, b[2]), max(y1, b[3])
+    return x0 - pad, y0 - pad, x1 + pad, y1 + pad
 
 
 KIND_TEXT = {'entry': 'входной мачтовый', 'exit_mast': 'выходной мачтовый',

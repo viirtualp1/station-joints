@@ -11,12 +11,14 @@
   ж) стрелки, по которым возможны параллельные передвижения, – в разных участках
      (стык между стрелками съезда; между параллельными съездами – негабаритный);
   и) в стрелочном участке не более трёх стрелок.
-Плюс нумерация стрелок (п. 2.3) и наименование участков (п. 2.4).
+Плюс стык под маневровый светофор для угловых заездов (м, п. 2.5 г, рис. 2.18),
+нумерация стрелок (п. 2.3) и наименование участков (п. 2.4).
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from graph import Graph, Joint
 
@@ -30,6 +32,7 @@ RULE_TEXT = {
     'ж': 'стрелки с параллельными передвижениями – в разные участки',
     'з': 'стрелка в предохранительный тупик – отдельный участок',
     'и': 'не более 3 стрелок в участке',
+    'м': 'под маневровый светофор для угловых заездов',
     'р': 'добавлен вручную',
 }
 
@@ -60,9 +63,10 @@ class Station:
     signals: list = field(default_factory=list)     # светофоры (signals.Signal)
     diag_dir: dict = field(default_factory=dict)    # edge id -> направление диагонали
     geom_check: tuple | None = None                 # (плохие углы, узлы вне сетки)
+    tupik_labels: dict = field(default_factory=dict)  # конец -> номер по исходному рисунку
     slope_ok: bool = True                           # удалось выдержать наклон диагоналей
-    pending_anchor: object = None                   # привязка, вычисленная _t_near/_t_between
     entry_check: list = field(default_factory=list)  # (сигнал, ok, первая стрелка)
+    safety: dict = field(default_factory=dict)      # конец предохранительного тупика -> стрелка
     sheet_cut: float | None = None                  # ордината стыка двух листов
     odd_right: bool = ODD_RIGHT                     # нечётная горловина справа
 
@@ -98,6 +102,44 @@ def analyse(g: Graph, odd_right: bool | None = None) -> Station:
     return st
 
 
+def _walk(st: Station, start, edge_id):
+    """От узла start по ребру edge_id через изломы – до конца пути или стрелки.
+    Возвращает (рёбра по порядку, последний узел)."""
+    g = st.g
+    e = g.edges[edge_id]
+    path, cur = [e], g.other(e, start)
+    while g.degree(cur) == 2 and cur not in st.sw:
+        e = next(x for x in g.incident(cur) if x.id != path[-1].id)
+        path.append(e)
+        cur = g.other(e, cur)
+    return path, cur
+
+
+def _find_safety(st: Station):
+    """Предохранительные тупики (п. 2.4 з): ответвление стрелки упирается в тупик
+    короче трёх междупутий без других стрелок; сбрасывающие стрелки на заданиях
+    рисуют так же. Предохранительный тупик – часть стрелки, а не путь: номера
+    не получает, остальные тупики нумеруются подряд в прежнем порядке."""
+    g = st.g
+    st.safety = {}
+    for s, info in st.sw.items():
+        path, end = _walk(st, s, info['branch'])
+        if g.degree(end) == 1 and g.nodes[end].mark == 'tupik' and \
+                sum(g.length(e) for e in path) < 3 * st.u:
+            st.safety[end] = s
+    for odd in (1, 0):
+        side = sorted((n for n, lab in st.tupik_labels.items()
+                       if n in g.nodes and int(lab[:-1]) % 2 == odd),
+                      key=lambda n: int(st.tupik_labels[n][:-1]))
+        num = 1 if odd else 2
+        for n in side:
+            if n in st.safety:
+                g.nodes[n].label = None
+            else:
+                g.nodes[n].label = f'{num}Т'
+                num += 2
+
+
 def _number_tupiks(st: Station):
     """П. 2.2: тупики в нечётной горловине – нечётные номера, в чётной – чётные,
     с буквой Т (1Т, 3Т… и 2Т, 4Т…); по порядку от края станции, сверху вниз."""
@@ -116,6 +158,7 @@ def _number_tupiks(st: Station):
         num = 1 if odd else 2
         for n in side:
             n.label = f'{num}Т'
+            st.tupik_labels[n.id] = n.label
             num += 2
 
 
@@ -386,14 +429,22 @@ def _number_switches(st: Station):
 # --------------------------------------------------------------------------
 # Расстановка стыков
 # --------------------------------------------------------------------------
-def _add(st: Station, edge, t, rule, negab=None, why=''):
+class Pos(NamedTuple):
+    """Место стыка на ребре: t – от узла edge.a; anchor – откуда отсчитано
+    ((узел, желаемое расстояние) | ('between', da, db) | None) – для компоновки
+    по нормам и для привязки светофоров."""
+    t: float
+    anchor: object = None
+
+
+def _add(st: Station, edge, pos: Pos | float, rule, negab=None, why=''):
     """negab=None – габаритность будет посчитана по геометрии (update_negab)."""
     g = st.g
     e = g.edges[edge]
     L = g.length(e)
+    t, anchor = pos if isinstance(pos, Pos) else (pos, None)
     m = min(L * 0.08, 0.2 * st.u)               # не вплотную к узлу, но без сдвига по норме
     t = min(max(t, m), L - m)
-    anchor, st.pending_anchor = st.pending_anchor, None   # от последнего _t_near/_t_between
     # все запросы (даже слившиеся с уже стоящим стыком) – для компоновки по нормам
     st.demands.append((edge, anchor))
     for j in st.joints:
@@ -475,7 +526,7 @@ def sig_clear(st: Station, e, node, kind) -> float:
     return need
 
 
-def _t_gab(st, e, node, extra=0.0, sig=None):
+def _t_gab(st, e, node, extra=0.0, sig=None) -> Pos:
     """Ближайшая к узлу node габаритная позиция на ребре e (с местом под светофор sig)."""
     off = foul_dist(st, node, e.id) if node in st.sw else 0.5 * st.u
     if sig:
@@ -483,13 +534,13 @@ def _t_gab(st, e, node, extra=0.0, sig=None):
     return _t_near(st, e, node, off + extra)
 
 
-def _t_between(st, e):
+def _t_between(st, e) -> Pos:
     """Позиция между стрелками на концах ребра: по возможности габаритная для обеих."""
     L = st.g.length(e)
     lo = foul_dist(st, e.a, e.id) if e.a in st.sw else 0.0
     hi = L - (foul_dist(st, e.b, e.id) if e.b in st.sw else 0.0)
-    st.pending_anchor = ('between', lo, L - hi)
-    return (lo + hi) / 2 if lo <= hi else L * (lo / (lo + (L - hi)))
+    t = (lo + hi) / 2 if lo <= hi else L * (lo / (lo + (L - hi)))
+    return Pos(t, ('between', lo, L - hi))
 
 
 def update_negab(st: Station, joints=None):
@@ -506,12 +557,12 @@ def update_negab(st: Station, joints=None):
         j.negab = neg
 
 
-def _t_near(st, e, node, off):
-    """Позиция на ребре e на расстоянии off от узла node."""
+def _t_near(st, e, node, off) -> Pos:
+    """Позиция на ребре e на расстоянии off от узла node (желаемое off – в привязке)."""
     L = st.g.length(e)
-    st.pending_anchor = (node, off)           # желаемое расстояние – для компоновки
+    anchor = (node, off)
     off = min(off, max(L * 0.4, L - 0.5 * st.u))   # не залезать на другой конец
-    return off if e.a == node else L - off
+    return Pos(off if e.a == node else L - off, anchor)
 
 
 def _nm(st, n):
@@ -524,6 +575,7 @@ def place_joints(st: Station):
     st.joints.clear()
     st.log.clear()
     st.demands = []
+    _find_safety(st)                            # по текущей компоновке (мм)
 
     # а, в – главные пути у перегона: зона между входным стыком (а) и стыком
     # у первой стрелки (в) – бесстрелочный участок НП / НДП / ЧП / ЧДП
@@ -556,32 +608,26 @@ def place_joints(st: Station):
                                    why=f'путь {nm}П ({side})'))
     _align_ladder_ends(st, b_at)
 
-    # з – стрелка, ведущая в предохранительный (короткий) тупик, – отдельный участок.
-    # Приближённо: ответвление стрелки упирается в тупик длиной < 3 междупутий
-    # без других стрелок; сбрасывающие стрелки/остряки на заданиях не рисуются.
-    for s, info in st.sw.items():
-        e = g.edges[info['branch']]
-        n, length, ok = s, 0.0, False
-        cur = e
-        while True:
-            length += g.length(cur)
-            n = g.other(cur, n)
-            if g.degree(n) == 1:
-                ok = g.nodes[n].mark == 'tupik' and length < 3 * u
-                break
-            if g.degree(n) != 2:
-                break
-            cur = [x for x in g.incident(n) if x.id != cur.id][0]
-        if not ok:
+    # з – стрелка, ведущая в предохранительный тупик, – отдельный участок. Как на
+    # рис. 2.7 (стрелка 36): стык со стороны станции – по прямому ходу стрелки;
+    # со стороны остряков участок ограничивает стык тупика или подъездного пути (г),
+    # а само ответвление-тупик входит в участок стрелки и стыка не требует
+    for s in sorted(set(st.safety.values())):
+        info = st.sw.get(s)
+        if info is None:
             continue
-        for k in (info['trunk'], info['straight'], info['branch']):
-            ed = g.edges[k]
-            _add(st, k, _t_gab(st, ed, s), 'з',
-                 why=f'стрелка {_nm(st, s)} ведёт в предохранительный тупик – отдельный участок')
+        why = f'стрелка {_nm(st, s)} ведёт в предохранительный тупик – отдельный участок'
+        ed = g.edges[info['straight']]
+        _add(st, ed.id, _t_gab(st, ed, s), 'з', why=why)
+        _, far = _walk(st, s, info['trunk'])
+        bounded = g.degree(far) == 1 and g.nodes[far].mark in ('tupik', 'pp') and far not in st.safety
+        if not bounded:
+            ed = g.edges[info['trunk']]
+            _add(st, ed.id, _t_gab(st, ed, s), 'з', why=why)
 
     # г, д – тупики и подъездные пути
     for n in list(g.nodes.values()):
-        if g.degree(n.id) != 1 or n.mark not in ('tupik', 'pp'):
+        if g.degree(n.id) != 1 or n.mark not in ('tupik', 'pp') or n.id in st.safety:
             continue
         path, cur = _walk_to_switch(st, n.id)
         if cur is None:
@@ -629,15 +675,19 @@ def place_joints(st: Station):
         _add(st, k, g.length(g.edges[k]) / 2, 'ж', negab=False,
              why=f'съезд {_nm(st, a)}/{_nm(st, b)}: стык между спаренными стрелками')
 
-    # ж – соседние стрелки на одном пути с ответвлениями в разные стороны
+    # ж – две соседние стрелки на одном пути, ответвления которых уходят от отрезка
+    # между ними (левая – вправо, правая – влево): передвижения по этим ответвлениям
+    # отрезок не занимают, значит, возможны одновременно – стрелки в разные участки
+    # (рис. 2.6 б, в; на рис. 2.7 – стык между стрелками 20 и 14). Если хотя бы одно
+    # ответвление смотрит на отрезок, маршруты по нему враждебны и стык не нужен
     for l in st.lines:
         ns = [n for n in l['nodes'] if n in st.sw]
         for a, b in zip(ns, ns[1:]):
             ia, ib = st.sw[a], st.sw[b]
             if ia['branch'] in l['edges'] or ib['branch'] in l['edges']:
                 continue            # стрелка, у которой по этому пути идёт ответвление
-            if ia['bdy'] * ib['bdy'] >= 0:
-                continue            # ответвления в одну сторону
+            if not ia['bdx'] > 0 > ib['bdx']:
+                continue            # ответвление смотрит на отрезок между стрелками
             k = _edge_between(st, l, a, b)
             if k is None or any(j.edge == k for j in st.joints):
                 continue            # уже разделены (например, стыками пути – б)
@@ -657,7 +707,24 @@ def place_joints(st: Station):
             break
         _add(st, k, t, 'и', why='в участке было {} стрелок ({}) – разделён'.format(
             len(s['switches']), ', '.join(sorted((_nm(st, x) for x in s['switches']), key=_numkey))))
+    # м (после «и»: если светофор не поместится, стык уберут, участки не пострадают) –
+    # маневровый светофор для угловых заездов ставится перед общей стрелкой стрелочной
+    # улицы, со стороны её остряков (п. 2.5 г); светофоры стоят у стыков, поэтому, если
+    # стыка там нет, его добавляют (рис. 2.18: светофор М16 и стык при нём)
+    for c in st.ladders:
+        s = ladder_head(st, c)
+        trunk = g.edges[st.sw[s]['trunk']]
+        if not any(j.edge == trunk.id for j in st.joints):
+            _add(st, trunk.id, _t_gab(st, trunk, s, sig='man_dwarf'), 'м',
+                 why=f'под маневровый светофор для угловых заездов на стрелочную улицу '
+                     f'(стрелка {_nm(st, s)})')
     update_negab(st)
+    update_sections(st)
+
+
+def update_sections(st: Station):
+    """Участки, их имена и проверка въездов – по текущим положениям стыков.
+    Вызывать после любого изменения стыков."""
     st.sections = compute_sections(st)
     name_sections(st)
     check_entries(st)
@@ -692,6 +759,12 @@ def _align_ladder_ends(st: Station, b_at):
             j.t = t
             j.align_to = j2                     # держать ординату и после округления
             j.anchor = (bend, t if e.a == bend else L - t)
+
+
+def ladder_head(st: Station, ladder) -> int:
+    """Первая стрелка стрелочной улицы – та, что стоит на главном/приёмо-отправочном
+    пути (дальше всех от оси станции): общая для группы путей улицы."""
+    return max(ladder['switches'], key=lambda n: abs(st.g.nodes[n].x - st.xc))
 
 
 def _walk_to_switch(st: Station, end):
@@ -870,48 +943,3 @@ def name_sections(st: Station):
         near = sorted(near, key=_numkey)
         s['name'] = '/'.join(near) + 'П' if near else 'П'
 
-
-def report(st: Station) -> str:
-    g = st.g
-    out = []
-    out.append(f'Стрелок: {len(st.sw)}, путей станции: {len([l for l in st.lines if "name" in l])}, '
-               f'съездов: {len(st.crossovers)}, стрелочных улиц: {len(st.ladders)}')
-    out.append(f'Стыков: {len(st.joints)} (негабаритных: {sum(j.negab for j in st.joints)})')
-    if abs(st.u - 10) < 1e-6:
-        x0 = min(n.x for n in g.nodes.values())
-        out.append('Миллиметровка: 1 клетка = 10 мм = междупутье; ординаты от левого края, мм:')
-        sws = sorted(st.sw, key=lambda s: _numkey(_nm(st, s)))
-        out.append('  ' + ', '.join(f'{_nm(st, s)}: {g.nodes[s].x - x0:.0f}' for s in sws))
-        chk = getattr(st, 'geom_check', None)
-        if chk is not None:
-            bad, off = chk
-            out.append('Проверка чертежа: диагонали 10 мм по высоте на 15 мм по горизонтали – '
-                       + ('все' if not bad else f'НЕ все ({len(bad)}: {bad})')
-                       + '; узлы на линиях сетки – ' + ('все' if not off else f'НЕ все ({len(off)})'))
-    out.append('')
-    out.append('Въезды (зона между стыками а и в):')
-    for sig, ok, first in st.entry_check:
-        out.append(f'  {sig}П: ' + (f'есть, до стрелки {first}' if ok else 'НЕТ – проверьте!'))
-    out.append('')
-    from checks import audit_text                   # поздний импорт: checks зависит от joints
-    out += audit_text(st)
-    out.append('')
-    if getattr(st, 'signals', None):
-        from signals import report_signals          # поздний импорт: signals зависит от joints
-        out.append(f'Светофоры ({len(st.signals)}):')
-        out += report_signals(st)
-        out.append('')
-    out.append('Обоснование стыков:')
-    out += st.log
-    out.append('')
-    out.append('Участки:')
-    for s in sorted(st.sections, key=lambda s: (s['name'] in ('перегон', 'тупик', 'п/п'), s['name'])):
-        if s['name'] in ('перегон',):
-            continue
-        extra = ''
-        if s['switches']:
-            extra = f"  стрелок: {len(s['switches'])}"
-            if len(s['switches']) > 3:
-                extra += '  (!) > 3'
-        out.append(f"  {s['name']}{extra}")
-    return '\n'.join(out)
