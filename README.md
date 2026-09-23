@@ -56,7 +56,7 @@ signals.py  – светофоры (п. 2.5)          routes.py  – маршр�
 checks.py   – самопроверка по методичке   explain.py – режим «Объясни»
 scene.py    – сцена для интерфейса        server.py  – бэкенд (JSON через stdin/stdout)
 render.py, sheets.py, vedomost.py – PNG, PDF на листах, ведомость Word
-app_flutter/ – интерфейс (Flutter, Windows); app.py – старый интерфейс (customtkinter)
+app_flutter/ – интерфейс (Flutter, Windows)
 ```
 
 Тесты:

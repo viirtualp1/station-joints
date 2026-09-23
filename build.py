@@ -1,10 +1,8 @@
 """Сборка приложения для раздачи (без исходников).
 
-    python build.py            – новая версия: Flutter-интерфейс + Python-бэкенд
-                                 -> dist/StationJoints/, установщик
-                                    dist/StationJoints-Setup-<версия>.exe и
-                                    портативный архив dist/StationJoints-win64.zip
-    python build.py legacy     – старая версия на customtkinter -> dist/StationJoints.exe
+    python build.py   – Flutter-интерфейс + Python-бэкенд -> dist/StationJoints/,
+                        установщик dist/StationJoints-Setup-<версия>.exe и
+                        портативный архив dist/StationJoints-win64.zip
 
 Python-часть собирается в отдельном окружении .build-venv, куда ставятся только нужные
 пакеты (OpenCV без GUI, numpy, Pillow) – так сборка заметно меньше.
@@ -27,7 +25,7 @@ PY = os.path.join(VENV, 'Scripts' if os.name == 'nt' else 'bin', 'python')
 SEP = ';' if os.name == 'nt' else ':'
 APP = os.path.join(ROOT, 'app_flutter')
 EXCLUDE = [a for m in ('matplotlib', 'scipy', 'skimage', 'pandas', 'IPython', 'pytest',
-                       'customtkinter', 'tkinter',
+                       'tkinter',
                        # не нужные форматы Pillow (AVIF – 7.6 МБ) и Tk/Qt
                        'PIL.AvifImagePlugin', 'PIL._avif', 'PIL.WebPImagePlugin', 'PIL._webp',
                        'PIL.ImageTk', 'PIL._imagingtk', 'PIL.ImageQt',
@@ -59,12 +57,12 @@ def run(*args, cwd=ROOT):
     subprocess.run(args, check=True, cwd=cwd)
 
 
-def venv(*extra):
+def venv():
     if not os.path.exists(PY):
         run(sys.executable, '-m', 'venv', VENV)
     run(PY, '-m', 'pip', 'install', '--quiet', '--upgrade', 'pip')
     run(PY, '-m', 'pip', 'install', '--quiet', 'opencv-python-headless', 'numpy', 'pillow',
-        'pyinstaller', *extra)
+        'pyinstaller')
 
 
 def flutter_cmd():
@@ -132,21 +130,5 @@ def build_flutter():
     print(f'Установщик: {setup} ({os.path.getsize(setup) / 2**20:.0f} МБ)')
 
 
-def build_legacy():
-    venv('customtkinter')
-    run(PY, os.path.join('tools', 'make_icon.py'))
-    run(PY, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--windowed',
-        '--name', 'StationJoints',
-        '--icon', os.path.join('assets', 'icon.ico'),
-        '--add-data', f'assets{SEP}assets',
-        '--add-data', f'{os.path.join("samples", "var96_photo.jpg")}{SEP}samples',
-        '--collect-data', 'customtkinter',
-        *[a for m in ('matplotlib', 'scipy', 'skimage', 'pandas', 'IPython', 'pytest')
-          for a in ('--exclude-module', m)],
-        'app.py')
-    exe = os.path.join(ROOT, 'dist', 'StationJoints.exe' if os.name == 'nt' else 'StationJoints')
-    print(f'\nГотово: {exe} ({os.path.getsize(exe) / 2**20:.1f} МБ)')
-
-
 if __name__ == '__main__':
-    build_legacy() if 'legacy' in sys.argv[1:] else build_flutter()
+    build_flutter()
