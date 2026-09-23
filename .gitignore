@@ -1,6 +1,7 @@
 __pycache__
+.pytest_cache/
 .env
-run.bat
+.vscode/
 build/
 dist/
 .build-venv/

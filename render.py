@@ -16,7 +16,9 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from joints import Station
+from joints import SIG_D as SIG_LAMP
+from joints import SIG_ROW, Station
+from signals import ENTRY, EXIT_DWARF, EXIT_MAIN, footprint, geometry, offset
 
 BLUE = (20, 70, 200)
 JOINT = (0, 0, 0)
@@ -57,14 +59,12 @@ def _palette(n):
     return cols
 
 
-from joints import SIG_D as SIG_LAMP, SIG_OFF, SIG_ROW   # общие с расчётом места под светофор
 SIG_STEM = 6.0       # стойка мачты до огней (прил. 1: 6 мм)
 SIG_BASE = 2.0       # полувысота основания мачты
 SIG_BOX = 4.0        # трансформаторный ящик (прил. 1: 4 мм)
 
 
 def _draw_signal(d, st, s, S, mm, lw, font_name, font2):
-    from signals import ENTRY, EXIT_DWARF, EXIT_MAIN, geometry, offset
     (x, y), (dx, dy), (nx, ny) = geometry(st, s)
     r = SIG_LAMP / 2
 
@@ -235,6 +235,18 @@ class Recorder:
 
 REC_PX = 10.0          # пикселей на мм при записи (шрифты PIL – целые, точность 0,1 мм)
 
+LAYERS = dict(joints=True, signals=True, numbers=True, letters=False, sections=False,
+              section_names=False, annots=True, grid=True)
+
+
+def layer_flags(layers: dict | None = None) -> dict:
+    """Слои интерфейса -> именованные параметры render()."""
+    lay = {**LAYERS, **(layers or {})}
+    return dict(show_grid=lay['grid'], show_joints=lay['joints'], show_signals=lay['signals'],
+                show_numbers=lay['numbers'], show_letters=lay['letters'],
+                show_sections=lay['sections'], show_section_names=lay['section_names'],
+                show_annots=lay['annots'])
+
 
 def render(st: Station, size, *, show_joints=True, show_letters=False,
            show_numbers=True, show_sections=False, show_section_names=False,
@@ -385,10 +397,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
 
     f_num = _font(FONT_NUM * mm)
     f_letter = _font(FONT_LETTER * mm)
-    sig_boxes = []
-    if show_signals:
-        from signals import footprint
-        sig_boxes = [footprint(st, s) for s in getattr(st, 'signals', [])]
+    sig_boxes = [footprint(st, s) for s in st.signals] if show_signals else []
 
     if record is not None:
         record.tag = 'switches'
@@ -413,7 +422,6 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             # на стороне ответвления, над обозначением стрелки
             # п. 2.3: номер пишут со стороны привода – со стороны поля или широкого
             # междупутья; при равных междупутьях – напротив ответвления
-            mx_, my_ = n.x + tx * SW_BAR / 2 * st.u / 10, n.y + ty * SW_BAR / 2 * st.u / 10
             side = -1.0
             if abs(ty) < 0.2:                   # стрелка на горизонтальном пути
                 gap = {}
@@ -447,8 +455,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
     # стыки (прил. 1): 2 мм высота, полочки 2 мм; негабаритный – в окружности Ø6
     sig_side = {}                                   # стык -> сторона, где стоит светофор
     if show_signals:
-        from signals import geometry
-        for s in getattr(st, 'signals', []):
+        for s in st.signals:
             sig_side.setdefault(id(s.joint), []).append(geometry(st, s)[2])
     if show_joints:
         for j in st.joints:
@@ -483,7 +490,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
     if show_signals:
         f_sig = _font(FONT_LETTER * 1.2 * mm)
         f_two = _font(1.5 * mm)
-        for s in getattr(st, 'signals', []):
+        for s in st.signals:
             _draw_signal(d, st, s, S, mm, lw, f_sig, f_two)
 
     # линия склейки двух листов (режим «Два листа»); клиент рисует её сам

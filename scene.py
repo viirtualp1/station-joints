@@ -1,5 +1,6 @@
 """Схема станции как JSON-сцена для клиента (Flutter): векторные примитивы в мм
-плюс объекты для взаимодействия (стыки, пути, светофоры, участки) и замечания самопроверки.
+плюс объекты для взаимодействия (стыки, пути, светофоры, участки, маршруты) и замечания
+самопроверки.
 
 Чертёж рисует render.py в режиме записи – размеры обозначений (прил. 1) остаются
 в одном месте, клиент только отображает примитивы."""
@@ -11,14 +12,12 @@ import io
 import numpy as np
 from PIL import Image
 
-from joints import RULE_TEXT, Station
-from render import REC_PX, Recorder, render
-from signals import footprint, signal_rows
 from edits import chain
+from joints import RULE_TEXT, Station
+from render import LAYERS, REC_PX, Recorder, layer_flags, render
+from routes import route_rows
+from signals import KIND_TEXT, drawing_bounds, footprint, signal_rows
 from tables import issues, section_rows
-
-LAYERS = dict(joints=True, signals=True, numbers=True, letters=False, sections=False,
-              section_names=False, annots=True, grid=True)
 
 
 def _annot_png(a) -> str:
@@ -36,19 +35,9 @@ def build_scene(st: Station, annots=(), layers: dict | None = None) -> dict:
     lay = {**LAYERS, **(layers or {})}
     g = st.g
     rec = Recorder(REC_PX)
-    render(st, (1, 1), record=rec, show_joints=lay['joints'], show_signals=lay['signals'],
-           show_numbers=lay['numbers'], show_letters=lay['letters'],
-           show_sections=lay['sections'], show_section_names=lay['section_names'])
-
-    x0, y0, x1, y1 = g.bbox()
-    for s in st.signals:
-        b = footprint(st, s)
-        x0, y0, x1, y1 = min(x0, b[0]), min(y0, b[1]), max(x1, b[2]), max(y1, b[3])
-    ann = []
-    if lay['annots']:
-        for a in annots:
-            ann.append({'x0': a.x0, 'y0': a.y0, 'x1': a.x1, 'y1': a.y1, 'png': _annot_png(a)})
-            x0, y0, x1, y1 = min(x0, a.x0), min(y0, a.y0), max(x1, a.x1), max(y1, a.y1)
+    render(st, (1, 1), record=rec, **layer_flags(lay))
+    shown = list(annots) if lay['annots'] else []
+    ann = [{'x0': a.x0, 'y0': a.y0, 'x1': a.x1, 'y1': a.y1, 'png': _annot_png(a)} for a in shown]
 
     joints = []
     for i, j in enumerate(st.joints):
@@ -82,7 +71,7 @@ def build_scene(st: Station, annots=(), layers: dict | None = None) -> dict:
                       'end': deg == 1, 'mark': n.mark, 'label': n.label or n.number or '',
                       'manual': n.fixed_mark})
     return {
-        'bounds': [x0 - 8, y0 - 8, x1 + 8, y1 + 8],
+        'bounds': list(drawing_bounds(st, shown, pad=8)),
         'origin_x': min(n.x for n in g.nodes.values()),
         'sheet_cut': st.sheet_cut,
         'items': rec.items,
@@ -93,6 +82,8 @@ def build_scene(st: Station, annots=(), layers: dict | None = None) -> dict:
         'nodes': nodes,
         'layers': lay,
         'sections': section_rows(st),
+        'routes': route_rows(st),
         'issues': issues(st),
         'odd_right': st.odd_right,
+        'signal_kinds': KIND_TEXT,               # коды типов светофоров -> подписи (для правки)
     }

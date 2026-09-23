@@ -1,4 +1,5 @@
+# Зависимости бэкенда (запуск из исходников). Сборка (build.py) ставит свои в .build-venv,
+# тесты и CI – requirements-dev.txt.
 opencv-python-headless
 numpy
 pillow
-customtkinter

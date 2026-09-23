@@ -4,10 +4,10 @@
 --odd-left – нечётная горловина слева, как в пособии (по умолчанию – справа)."""
 import sys
 
-from joints import report
 from layout import build_station
 from parser import parse_image
 from render import render
+from report import report
 from sheets import make_sheets, save_pdf
 
 

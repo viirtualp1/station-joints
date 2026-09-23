@@ -15,16 +15,12 @@ import math
 from PIL import Image, ImageChops, ImageDraw
 
 from joints import Station
+from paper import FIELD, FIELD_L, FORMATS, OVERLAP, PAD, TITLE_H, fit_format
 from render import _font, render
-from signals import footprint
+from signals import drawing_bounds, footprint
 
 DPI = 300
 PX = DPI / 25.4                       # пикселей в 1 мм
-OVERLAP = 10.0                        # мм – полоса перекрытия для склейки
-PAD = 4.0                             # мм – отступ схемы от рамки
-FIELD_L, FIELD = 20.0, 5.0            # поля рамки, мм
-TITLE_H = 8.0                         # строка подписи листа внизу рамки
-FORMATS = [('A4', 297, 210), ('A3', 420, 297), ('A2', 594, 420), ('A1', 841, 594)]
 
 
 def _busy(st: Station, annots=()):
@@ -73,26 +69,7 @@ def _edge(st: Station, x: float, side: int, annots=(), limit: float = 15.0) -> f
 
 
 def _bounds(st: Station, annots):
-    x0, y0, x1, y1 = st.g.bbox()
-    for s in st.signals:
-        b = footprint(st, s)
-        x0, y0, x1, y1 = min(x0, b[0]), min(y0, b[1]), max(x1, b[2]), max(y1, b[3])
-    for a in annots:
-        x0, y0, x1, y1 = min(x0, a.x0), min(y0, a.y0), max(x1, a.x1), max(y1, a.y1)
-    return x0 - 6, y0 - 6, x1 + 6, y1 + 6          # подписи номеров, упоры тупиков
-
-
-def usable_width(fmt: str) -> float:
-    """Ширина рабочего поля листа формата fmt (альбомный), мм."""
-    fw = next(w for n, w, _ in FORMATS if n == fmt)
-    return fw - FIELD_L - FIELD - 2 * PAD
-
-
-def _format(w, h):
-    for name, fw, fh in FORMATS:
-        if w <= fw - FIELD_L - FIELD - 2 * PAD and h <= fh - 2 * FIELD - TITLE_H - 2 * PAD:
-            return name, fw, fh
-    return FORMATS[-1]
+    return drawing_bounds(st, annots, pad=6)          # подписи номеров, упоры тупиков
 
 
 def make_sheets(st: Station, annots=(), *, show_grid=False, show_letters=False,
@@ -102,11 +79,10 @@ def make_sheets(st: Station, annots=(), *, show_grid=False, show_letters=False,
     parts = [(x0, _edge(st, xc + OVERLAP / 2, +1, annots)),
              (_edge(st, xc - OVERLAP / 2, -1, annots), x1)]
     hmax = y1 - y0
-    fname, fw, fh = _format(max(b - a for a, b in parts), hmax)
-    if fmt:                                   # заданный формат, если схема в него влезает
-        want = next(f for f in FORMATS if f[0] == fmt)
-        if FORMATS.index(want) > FORMATS.index((fname, fw, fh)):
-            fname, fw, fh = want
+    fname, fw, fh = fit_format(max(b - a for a, b in parts), hmax)
+    want = next((f for f in FORMATS if f[0] == fmt), None)
+    if want and FORMATS.index(want) > FORMATS.index((fname, fw, fh)):
+        fname, fw, fh = want                  # заданный формат, если схема в него влезает
     labels = ('нечётная горловина', 'чётная горловина')
 
     pages = []
