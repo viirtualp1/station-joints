@@ -196,7 +196,7 @@ def _train_routes(net: _Net) -> list[Route]:
                 if sec is None:
                     return None
                 if sec['name'] in net.tracks:
-                    return (f'на путь {sec["name"]}', sec, _peregon_note(st, end, False))
+                    return (f'на путь {sec["name"]}', sec, _peregon_note(st, end, False) if end is not None else '')
                 if sec['name'] == 'перегон':
                     return 'stop'
                 return None
