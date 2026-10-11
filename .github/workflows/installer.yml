@@ -1,0 +1,116 @@
+# Windows installer: backend (PyInstaller), UI (Flutter) and setup (Inno Setup),
+# built with `python build.py`.
+#   * pull request – a test build; a comment on the PR links the setup .exe and the
+#     portable zip (.github/scripts/pr-build-comment.js) and is updated on every push;
+#   * tag vX.Y.Z  – a release: published on GitHub Releases, where installed apps find
+#     it themselves (update.dart: releases/latest, asset StationJoints-Setup-*.exe).
+name: Installer
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths-ignore: ['**/*.md']  # docs-only changes need no test build
+  workflow_dispatch:           # manual run: build only, files in the run's artifacts
+
+concurrency:                   # a new push to the PR replaces its unfinished build
+  group: installer-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: write              # create the release and upload its files
+  issues: write                # comment on the pull request with the test build
+  pull-requests: write
+
+jobs:
+  build:
+    name: Installer (Windows)
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'          # build messages are Russian; the runner console is cp1252
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tag matches the version in pubspec.yaml
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          v=$(sed -nE 's/^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' app_flutter/pubspec.yaml)
+          if [ "${GITHUB_REF_NAME#v}" != "$v" ]; then
+            echo "::error::Tag is $GITHUB_REF_NAME but app_flutter/pubspec.yaml says $v – bump version: and re-tag"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements-dev.txt
+      - name: Backend tests before building
+        run: python -m pytest -q
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.5
+          channel: stable
+          cache: true
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build (build.py)
+        run: python build.py
+
+      - name: Find the installer
+        id: files
+        shell: bash
+        run: echo "setup=$(cd dist && ls StationJoints-Setup-*.exe)" >> "$GITHUB_OUTPUT"
+
+      # uploaded as-is (not zipped): the link downloads the .exe itself
+      - name: Upload the installer
+        id: setup
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/${{ steps.files.outputs.setup }}
+          archive: false
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload the portable archive
+        id: portable
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/StationJoints-win64.zip
+          archive: false
+          retention-days: 30
+          if-no-files-found: error
+
+      # comments need a write token – not given to pull requests from forks
+      - name: Link the test build in the PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v8
+        env:
+          SETUP_NAME: ${{ steps.files.outputs.setup }}
+          SETUP_URL: ${{ steps.setup.outputs.artifact-url }}
+          PORTABLE_URL: ${{ steps.portable.outputs.artifact-url }}
+        with:
+          script: |
+            await require('./.github/scripts/pr-build-comment.js')({
+              github, context, ok: true,
+              setupName: process.env.SETUP_NAME,
+              setupUrl: process.env.SETUP_URL,
+              portableUrl: process.env.PORTABLE_URL,
+            });
+      - name: Report the failed build in the PR
+        if: failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await require('./.github/scripts/pr-build-comment.js')({ github, context, ok: false });
+
+      - name: Publish the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/StationJoints-Setup-*.exe
+            dist/StationJoints-win64.zip
+          generate_release_notes: true

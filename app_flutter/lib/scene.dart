@@ -177,10 +177,69 @@ class SectionObj {
   }
 }
 
+/// Маршрут (раздел 3 пособия): поездной (приём, отправление) или простой маневровый.
+class RouteObj {
+  final int id, no;
+  final String kind; // приём | отправление | маневровый
+  final bool variant;
+  final String throat, signal, name, note;
+  final int signalId;
+  final List<String> switches; // «+2/4», «−10»…
+  final List<String> key; // стрелки, определяющие вариантный маршрут
+  final List<String> sections;
+  final List<(Offset, Offset)> segs;
+  RouteObj({
+    required this.id,
+    required this.no,
+    required this.kind,
+    required this.variant,
+    required this.throat,
+    required this.signal,
+    required this.signalId,
+    required this.name,
+    required this.note,
+    required this.switches,
+    required this.key,
+    required this.sections,
+    required this.segs,
+  });
+
+  bool get train => kind != 'маневровый';
+
+  /// Габарит маршрута на схеме, мм – чтобы показать его целиком.
+  Rect get box {
+    if (segs.isEmpty) return Rect.zero;
+    var r = Rect.fromPoints(segs.first.$1, segs.first.$2);
+    for (final (a, b) in segs) {
+      r = r.expandToInclude(Rect.fromPoints(a, b));
+    }
+    return r;
+  }
+
+  factory RouteObj.fromJson(Map<String, dynamic> o) => RouteObj(
+    id: o['id'] as int,
+    no: o['no'] as int,
+    kind: o['kind'] as String,
+    variant: o['variant'] as bool? ?? false,
+    throat: o['throat'] as String? ?? '',
+    signal: o['signal'] as String,
+    signalId: o['signal_id'] as int? ?? -1,
+    name: o['name'] as String,
+    note: o['note'] as String? ?? '',
+    switches: [for (final s in o['switches'] as List? ?? const []) s as String],
+    key: [for (final s in o['key'] as List? ?? const []) s as String],
+    sections: [for (final s in o['sections'] as List? ?? const []) s as String],
+    segs: [for (final s in o['segs'] as List? ?? const []) (Offset(_d(s[0]), _d(s[1])), Offset(_d(s[2]), _d(s[3])))],
+  );
+}
+
+/// Надпись с исходной картинки (п/п, номер варианта). [key] – само содержимое:
+/// по нему кэшируется декодированная картинка, одинаковая в сценах после правок.
 class AnnotObj {
   final Rect rect;
   final Uint8List png;
-  AnnotObj(this.rect, this.png);
+  final String key;
+  AnnotObj(this.rect, this.png, this.key);
 }
 
 class Scene {
@@ -194,8 +253,11 @@ class Scene {
   final List<SignalObj> signals;
   final List<NodeObj> nodes;
   final List<SectionObj> sections;
+  final List<RouteObj> routes;
   final List<String> issues;
+  final Map<String, String> signalKinds; // код типа светофора -> подпись
   final String? undo, redo; // что отменит / повторит Ctrl+Z / Ctrl+Y
+  final bool? dirty; // есть несохранённые изменения (решает бэкенд); null – не сообщил
   Map<String, dynamic>? source; // сведения об открытом файле (меняются при сохранении)
 
   Scene({
@@ -209,9 +271,12 @@ class Scene {
     required this.signals,
     this.nodes = const [],
     required this.sections,
+    this.routes = const [],
     required this.issues,
+    this.signalKinds = const {},
     this.undo,
     this.redo,
+    this.dirty,
     this.source,
   });
 
@@ -224,7 +289,11 @@ class Scene {
       items: [for (final it in j['items'] as List) Item.fromJson(it as Map<String, dynamic>)],
       annots: [
         for (final a in j['annots'] as List)
-          AnnotObj(Rect.fromLTRB(_d(a['x0']), _d(a['y0']), _d(a['x1']), _d(a['y1'])), base64Decode(a['png'] as String)),
+          AnnotObj(
+            Rect.fromLTRB(_d(a['x0']), _d(a['y0']), _d(a['x1']), _d(a['y1'])),
+            base64Decode(a['png'] as String),
+            a['png'] as String,
+          ),
       ],
       joints: [
         for (final o in j['joints'] as List)
@@ -280,9 +349,12 @@ class Scene {
           ),
       ],
       sections: [for (final o in (j['sections'] as List? ?? const [])) SectionObj.fromJson(o as Map<String, dynamic>)],
+      routes: [for (final o in (j['routes'] as List? ?? const [])) RouteObj.fromJson(o as Map<String, dynamic>)],
       issues: [for (final s in (j['issues'] as List? ?? const [])) s as String],
+      signalKinds: {for (final e in ((j['signal_kinds'] as Map?) ?? const {}).entries) '${e.key}': '${e.value}'},
       undo: (j['history'] as Map?)?['undo'] as String?,
       redo: (j['history'] as Map?)?['redo'] as String?,
+      dirty: (j['history'] as Map?)?['dirty'] as bool?,
       source: source ?? (j['source'] as Map?)?.cast<String, dynamic>(),
     );
   }

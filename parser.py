@@ -556,6 +556,9 @@ def parse_image(path: str) -> dict[str, Any]:
     H, W = net.shape
     cleanup(g, W, sw)
     drop_switchless(g)
+    if not g.switches():
+        raise ValueError('На картинке не найдена схема станции: не распознано ни одной стрелки. '
+                         'Нужно фото или скан однониточной схемы, где пути – сплошные линии.')
     classify_ends(g, annots, W, H, sw)
     info = dict(scale=scale, angle=ang, stroke=sw, size=(W, H))
     return dict(graph=g, gray=gray, bin=binimg, net=net, skel=sk,

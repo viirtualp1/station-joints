@@ -17,9 +17,10 @@ from __future__ import annotations
 import math
 
 from graph import Annotation
-from signals import place_signals
-from joints import (Station, _central_edge, _find_center, _switch_geometry, analyse,
-                    check_entries, compute_sections, name_sections, place_joints, update_negab)
+from joints import (Station, _central_edge, _find_center, _switch_geometry, analyse, place_joints,
+                    update_negab, update_sections)
+from paper import OVERLAP, usable_width
+from signals import drawing_bounds, place_signals, prune_signal_joints
 
 CELL = 10.0          # мм – междупутье
 MIN_EDGE = 5.0       # мин. длина любого горизонтального отрезка между узлами
@@ -32,13 +33,13 @@ MIN_GAP = 15.0       # зазор между несвязанными отрез
 PP_TEXT = 15.0       # место под надпись «п/п» у конца подъездного пути
 GRID_X = 5           # шаг сетки для узлов по горизонтали, мм: стрелки, повороты, концы
                      # стоят на линиях 5 мм (диагональ 15 мм кратна 5 – оба её конца на сетке)
+MARGIN = 20.0        # поля листа слева/сверху
 
 
 def snap(v: float, up=False) -> int:
     """Округление до линии сетки GRID_X (up=True – вверх, для минимальных длин)."""
     q = v / GRID_X
     return int((math.ceil(q - 1e-6) if up else round(q)) * GRID_X)
-MARGIN = 20.0        # поля листа слева/сверху
 
 
 def build_station(graph, annots=(), sheet_fmt: str | None = None,
@@ -55,6 +56,7 @@ def build_station(graph, annots=(), sheet_fmt: str | None = None,
     place_joints(st)
     snap_joints(st)
     place_signals(st)
+    prune_signal_joints(st)
     if sheet_fmt:
         # две горловины – на двух листах, пути парка вытянуты через оба (как чертят
         # вручную на миллиметровке); после растяжки стыки и светофоры – заново
@@ -62,6 +64,7 @@ def build_station(graph, annots=(), sheet_fmt: str | None = None,
             place_joints(st)
             snap_joints(st)
             place_signals(st)
+            prune_signal_joints(st)
     st.geom_check = check_geometry(st)
     new_annots = _move_annots(st, annots, orig, y0, u0)
     return st, new_annots
@@ -86,14 +89,13 @@ def _cut_candidates(st: Station):
 def spread_to_sheets(st: Station, fmt: str) -> bool:
     """Растянуть пути парка по оси станции так, чтобы левая горловина заполнила
     лист 1, правая – лист 2 выбранного формата. Возвращает True, если растянули."""
-    from sheets import OVERLAP, _bounds, usable_width   # поздний импорт: sheets -> render
     g = st.g
     cands = _cut_candidates(st)
     if not cands:
         st.sheet_cut = None
         return False
     x = min(cands, key=lambda c: abs(c - st.xc))
-    bx0, _, bx1, _ = _bounds(st, ())
+    bx0, _, bx1, _ = drawing_bounds(st, pad=6)
     W = usable_width(fmt) - OVERLAP / 2 - 6        # запас под подписи у кромки
     dl = max(0, math.floor((W - (x - bx0)) / 10) * 10)
     dr = max(0, math.floor((W - (bx1 - x)) / 10) * 10)
@@ -111,6 +113,7 @@ def spread_to_sheets(st: Station, fmt: str) -> bool:
 def to_grid(st: Station):
     g = st.g
     u = st.u
+    st.orig_x = {n.id: n.x for n in g.nodes.values()}
     x0 = min(n.x for n in g.nodes.values())
     y0 = min(n.y for n in g.nodes.values())
     # уровни путей -> целые клетки: каждый уровень строго на линии 10 мм,
@@ -181,7 +184,7 @@ def refresh(st: Station):
         l['x0'] = min(g.nodes[n].x for n in l['nodes'])
         l['x1'] = max(g.nodes[n].x for n in l['nodes'])
         l['y'] = g.nodes[l['nodes'][0]].y
-        l['nodes'].sort(key=lambda n: g.nodes[n].x)
+        l['nodes'].sort(key=st.xkey)
     st.sw.clear()
     _switch_geometry(st)
     _find_center_named(st)
@@ -201,7 +204,7 @@ def _required(st: Station, e) -> float:
     """Минимальная длина горизонтального отрезка e, чтобы на нём разошлись
     его стыки с нормативными расстояниями от стрелок."""
     g = st.g
-    a, b = (e.a, e.b) if g.nodes[e.a].x <= g.nodes[e.b].x else (e.b, e.a)
+    a, b = (e.a, e.b) if st.xkey(e.a) <= st.xkey(e.b) else (e.b, e.a)
     need = MIN_EDGE
     if a in st.sw and b in st.sw:
         need = MIN_SW
@@ -261,7 +264,7 @@ def relax(st: Station) -> bool:
     for e in g.edges.values():
         na, nb = g.nodes[e.a], g.nodes[e.b]
         if abs(na.y - nb.y) < 1e-6:
-            a, b = (e.a, e.b) if na.x <= nb.x else (e.b, e.a)
+            a, b = (e.a, e.b) if st.xkey(e.a) <= st.xkey(e.b) else (e.b, e.a)
             cons.append((a, b, snap(_required(st, e), up=True)))
         else:
             d = diag_dx(st, e)                  # единый наклон 10:15
@@ -273,7 +276,7 @@ def relax(st: Station) -> bool:
         rows.setdefault(round(n.y * 2), []).append(n.id)
     linked = {frozenset((e.a, e.b)) for e in g.edges.values()}
     for ids in rows.values():
-        ids.sort(key=lambda n: g.nodes[n].x)
+        ids.sort(key=st.xkey)
         for a, b in zip(ids, ids[1:]):
             if frozenset((a, b)) not in linked:
                 cons.append((a, b, snap(MIN_GAP, up=True)))
@@ -348,10 +351,7 @@ def snap_joints(st: Station):
         if 0.5 < t < L - 0.5:
             j.t = t
     update_negab(st)
-    # участки – по окончательным положениям стыков
-    st.sections = compute_sections(st)
-    name_sections(st)
-    check_entries(st)
+    update_sections(st)                         # участки – по окончательным положениям стыков
 
 
 def check_geometry(st: Station):

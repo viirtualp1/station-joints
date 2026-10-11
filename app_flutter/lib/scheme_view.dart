@@ -39,6 +39,12 @@ class EdgeHit extends Hit {
   EdgeHit(this.e, this.t, this.at);
 }
 
+/// Маршрут выбирают в списке; на схеме он подсвечивается целиком.
+class RouteHit extends Hit {
+  final RouteObj r;
+  RouteHit(this.r);
+}
+
 /// Управление камерой снаружи (кнопки зума, переход к светофору).
 class SchemeController extends ChangeNotifier {
   _SchemeViewState? _s;
@@ -95,7 +101,10 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
 
   ui.Picture? _pic;
   Scene? _picScene;
-  final Map<AnnotObj, ui.Image> _annotImg = {};
+  // надписи с картинки: декодированные PNG по содержимому (после правки сцена новая,
+  // а надписи те же – не декодируем заново); версия – чтобы холст перерисовался
+  final Map<String, ui.Image> _annotImg = {};
+  int _annotVersion = 0;
 
   late final AnimationController _anim = AnimationController(vsync: this, duration: const Duration(milliseconds: 260));
   double _k0 = 1, _k1 = 1;
@@ -119,13 +128,6 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
   }
 
   @override
-  void initState() {
-    super.initState();
-    widget.controller._s = this;
-    _anim.addListener(_tick);
-  }
-
-  @override
   void didUpdateWidget(SchemeView old) {
     super.didUpdateWidget(old);
     widget.controller._s = this;
@@ -139,21 +141,42 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
   }
 
   @override
+  void initState() {
+    super.initState();
+    widget.controller._s = this;
+    _anim.addListener(_tick);
+    _loadAnnots();
+  }
+
+  @override
   void dispose() {
     _anim.dispose();
     if (widget.controller._s == this) widget.controller._s = null;
+    for (final img in _annotImg.values) {
+      img.dispose();
+    }
     super.dispose();
   }
 
   Future<void> _loadAnnots() async {
     final s = widget.scene;
-    if (s == null) return;
-    for (final a in s.annots) {
-      if (_annotImg.containsKey(a)) continue;
+    final want = {for (final a in s?.annots ?? const <AnnotObj>[]) a.key};
+    // надписи, которых в сцене больше нет, – освободить
+    for (final k in _annotImg.keys.where((k) => !want.contains(k)).toList()) {
+      _annotImg.remove(k)!.dispose();
+    }
+    for (final a in s?.annots ?? const <AnnotObj>[]) {
+      if (_annotImg.containsKey(a.key)) continue;
       final codec = await ui.instantiateImageCodec(a.png);
       final fr = await codec.getNextFrame();
-      if (!mounted) return;
-      setState(() => _annotImg[a] = fr.image);
+      if (!mounted || !identical(widget.scene, s)) {
+        fr.image.dispose();
+        return;
+      }
+      setState(() {
+        _annotImg[a.key] = fr.image;
+        _annotVersion++;
+      });
     }
   }
 
@@ -407,9 +430,9 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
     if (wasPan || down == null) return;
     if (_buttons == kSecondaryButton) {
       final h = _hitTest(e.localPosition);
-      if (h is JointHit) {
+      if (h is JointHit || h is SignalHit) {
         widget.onSelect(h);
-        widget.onContext(e.position, h);
+        widget.onContext(e.position, h!);
       }
       return;
     }
@@ -501,6 +524,7 @@ class _SchemeViewState extends State<SchemeView> with SingleTickerProviderStateM
                   scene: s,
                   picture: _pic,
                   annots: _annotImg,
+                  annotVersion: _annotVersion,
                   k: _k,
                   o: _o,
                   grid: widget.grid,
@@ -599,7 +623,8 @@ void _drawText(Canvas c, Offset at, String text, double size, String anchor, Col
 class _Painter extends CustomPainter {
   final Scene? scene;
   final ui.Picture? picture;
-  final Map<AnnotObj, ui.Image> annots;
+  final Map<String, ui.Image> annots;
+  final int annotVersion;
   final double k;
   final Offset o;
   final bool grid;
@@ -612,6 +637,7 @@ class _Painter extends CustomPainter {
     required this.scene,
     required this.picture,
     required this.annots,
+    required this.annotVersion,
     required this.k,
     required this.o,
     required this.grid,
@@ -704,7 +730,7 @@ class _Painter extends CustomPainter {
     canvas.translate(o.dx, o.dy);
     canvas.scale(k);
     for (final a in s.annots) {
-      final img = annots[a];
+      final img = annots[a.key];
       if (img == null) continue;
       canvas.drawImageRect(
         img,
@@ -758,6 +784,8 @@ class _Painter extends CustomPainter {
         final c = S(n.pos);
         if (!hovered) canvas.drawCircle(c, 9, Paint()..color = tok.accentSoft);
         canvas.drawCircle(c, 9, stroke);
+      case RouteHit(:final r):
+        _route(canvas, r);
       case EdgeHit(:final e) when tool == Tool.track:
         // весь отрезок «от стрелки до стрелки»
         final p = Paint()
@@ -778,6 +806,34 @@ class _Painter extends CustomPainter {
         canvas.drawLine(c.translate(-hh * .6, -hh), c.translate(hh * .6, -hh), p);
         canvas.drawLine(c.translate(-hh * .6, hh), c.translate(hh * .6, hh), p);
     }
+  }
+
+  /// Маршрут: полоса по всему пути, кружок у светофора, стрелка в конце.
+  void _route(Canvas canvas, RouteObj r) {
+    if (r.segs.isEmpty) return;
+    final w = math.max(5.0, 2.2 * k);
+    final band = Paint()
+      ..color = tok.accent.withValues(alpha: 0.45)
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = w;
+    for (final (a, b) in r.segs) {
+      canvas.drawLine(S(a), S(b), band);
+    }
+    final solid = Paint()..color = tok.accent;
+    canvas.drawCircle(S(r.segs.first.$1), w * 0.9, solid);
+    final (a, b) = r.segs.last;
+    final d = S(b) - S(a);
+    if (d.distance < 1) return;
+    final u = d / d.distance, n = Offset(-u.dy, u.dx), tip = S(b);
+    canvas.drawPath(
+      Path()
+        ..moveTo(tip.dx, tip.dy)
+        ..lineTo((tip - u * w * 2.2 + n * w * 1.1).dx, (tip - u * w * 2.2 + n * w * 1.1).dy)
+        ..lineTo((tip - u * w * 2.2 - n * w * 1.1).dx, (tip - u * w * 2.2 - n * w * 1.1).dy)
+        ..close(),
+      solid,
+    );
   }
 
   /// Миллиметровка 1 / 5 / 10 мм – по экрану, чтобы линии были в 1 px при любом зуме.
@@ -832,5 +888,5 @@ class _Painter extends CustomPainter {
       old.dragPos != dragPos ||
       old.segA != segA ||
       old.segB != segB ||
-      old.annots.length != annots.length;
+      old.annotVersion != annotVersion;
 }

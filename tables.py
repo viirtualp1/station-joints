@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import re
 
+from checks import audit
 from joints import RULE_TEXT, Station, _nm, _numkey
+from signals import _pos, signal_rows
 
 THROAT_ODD, THROAT_EVEN, PARK = 'нечётная горловина', 'чётная горловина', 'пути станции'
 
@@ -86,7 +88,6 @@ def switch_rows(st: Station) -> list[dict]:
 
 
 def signal_table(st: Station) -> list[dict]:
-    from signals import _pos, signal_rows          # поздний импорт: signals -> joints
     return [{'name': s.name, 'kind': k, 'why': s.why, 'x': round(x),
              'throat': throat_of(st, _pos(st, s.joint)[0])} for s, k, x in signal_rows(st)]
 
@@ -105,7 +106,6 @@ def joint_rows(st: Station) -> list[dict]:
 
 def issues(st: Station) -> list[str]:
     """Замечания самопроверки (пустой список – всё по пособию)."""
-    from checks import audit                        # поздний импорт: checks -> joints
     out = [f'{what}: {bad}' if bad else what for ok, what, bad in audit(st) if not ok]
     out += [f'нет участка {sig}П между стыками а и в' for sig, ok, _ in st.entry_check if not ok]
     return out

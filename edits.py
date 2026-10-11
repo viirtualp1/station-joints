@@ -16,7 +16,8 @@ import copy
 import math
 
 from graph import Graph, Joint
-from joints import Station
+from joints import Station, analyse
+from signals import KIND_TEXT, Signal
 
 TOL = 1.5          # мм – стык «на том же месте»
 
@@ -39,6 +40,12 @@ def resolve(st: Station, lc: dict) -> float | None:
     t = lc['dist'] if lc['ref'] == e.a else L - lc['dist']
     m = min(0.5, L / 4)
     return min(max(t, m), L - m)
+
+
+def _anchor_node(j: Joint) -> int | None:
+    """Узел, от которого отсчитан стык (по нему к стыку привязаны светофоры б, в, г)."""
+    a = j.anchor
+    return a[0] if isinstance(a, tuple) and a and not isinstance(a[0], str) else None
 
 
 def _nearest_joint(st: Station, edge: int, t: float, tol: float = TOL) -> Joint | None:
@@ -65,8 +72,11 @@ def diff_joints(rules: Station, cur: Station) -> list[dict]:
         if m.negab != r.negab:
             ops.append({'op': 'negab', 'value': m.negab, **loc(cur, m.edge, m.t)})
     for j in free:                              # добавленные и перенесённые
-        ops.append({'op': 'add', 'rule': j.rule, 'negab': j.negab, 'fixed': j.fixed,
-                    'why': j.why, **loc(cur, j.edge, j.t)})
+        op = {'op': 'add', 'rule': j.rule, 'negab': j.negab, 'fixed': j.fixed,
+              'why': j.why, **loc(cur, j.edge, j.t)}
+        if _anchor_node(j) is not None:
+            op['anchor'] = _anchor_node(j)      # иначе у перенесённого стыка пропадёт светофор
+        ops.append(op)
     return ops
 
 
@@ -85,8 +95,11 @@ def apply_joint_ops(st: Station, ops: list[dict]):
                 j.negab, j.fixed = op['value'], True
         elif op['op'] == 'add':
             if _nearest_joint(st, op['edge'], t, 0.3) is None:
+                e = st.g.edges[op['edge']]
+                node = op.get('anchor')
+                anchor = (node, t if node == e.a else st.g.length(e) - t) if node in (e.a, e.b) else None
                 st.joints.append(Joint(op['edge'], t, op.get('rule', 'р'), op.get('negab', False),
-                                       op.get('fixed', True), why=op.get('why', '')))
+                                       op.get('fixed', True), anchor=anchor, why=op.get('why', '')))
 
 
 # --------------------------------------------------------------------------- светофоры
@@ -113,19 +126,18 @@ def reset_signal(sops: list[dict], key: dict):
 
 
 def apply_signal_ops(st: Station, sops: list[dict]):
-    from signals import Signal                  # поздний импорт: signals -> joints
     for o in sops:
         t = resolve(st, o)
         if t is None or o['toward'] not in st.g.nodes:
             continue
         s = next((s for s in st.signals if s.joint.edge == o['edge'] and s.toward == o['toward']
                   and abs(s.joint.t - t) < TOL), None)
+        kind = o.get('kind') if o.get('kind') in KIND_TEXT else None   # старый/битый файл
         if s is None and o.get('added'):
             j = _nearest_joint(st, o['edge'], t)
             if j is None:
                 continue
-            s = Signal(o.get('name', 'М'), o.get('kind', 'man_dwarf'), j, o['toward'],
-                       why='добавлен вручную')
+            s = Signal(o.get('name', 'М'), kind or 'man_dwarf', j, o['toward'], why='добавлен вручную')
             st.signals.append(s)
         if s is None:
             continue
@@ -134,15 +146,14 @@ def apply_signal_ops(st: Station, sops: list[dict]):
             continue
         if o.get('name'):
             s.name = o['name']
-        if o.get('kind'):
-            s.kind = o['kind']
-        s.manual = True                         # type: ignore[attr-defined]
+        if kind:
+            s.kind = kind
+        s.manual = True
 
 
 # --------------------------------------------------------------------------- пути
 def _scale(g0: Graph) -> float:
     """Пикселей распознанной картинки на мм миллиметровки (междупутье = 10 мм)."""
-    from joints import analyse                  # поздний импорт
     return analyse(copy.deepcopy(g0)).u / 10.0
 
 

@@ -23,13 +23,29 @@ const stj = String.fromEnvironment('STJ'); // файл работы для пр�
 final _sample = '${Directory.current.parent.path}${Platform.pathSeparator}samples'
     '${Platform.pathSeparator}var96_photo.jpg';
 
-Future<void> _font(String family, List<String> files) async {
+/// Шрифт для снимков: первый найденный файл из вариантов (Windows – настоящие шрифты
+/// интерфейса, Linux/CI – метрически похожие). Не нашлось – тест идёт со шрифтом-заглушкой.
+Future<void> _font(String family, List<List<String>> variants) async {
+  final files = variants.firstWhere((v) => v.every((f) => File(f).existsSync()), orElse: () => const []);
+  if (files.isEmpty) return;
   final l = FontLoader(family);
   for (final f in files) {
     final b = File(f).readAsBytesSync();
     l.addFont(Future.value(ByteData.view(b.buffer)));
   }
   await l.load();
+}
+
+/// Корень Flutter SDK: FLUTTER_ROOT или выше по дереву от flutter_tester.
+String _flutterRoot() {
+  final env = Platform.environment['FLUTTER_ROOT'];
+  if (env != null && env.isNotEmpty) return env;
+  var d = File(Platform.resolvedExecutable).parent;
+  for (var i = 0; i < 8; i++) {
+    if (Directory('${d.path}${Platform.pathSeparator}bin${Platform.pathSeparator}cache').existsSync()) return d.path;
+    d = d.parent;
+  }
+  return r'C:\src\flutter';
 }
 
 final _boundary = GlobalKey();
@@ -58,13 +74,25 @@ void main() {
   setUpAll(() async {
     // недавние – во временную папку, не в профиль пользователя
     Recent.dirOverride = Directory.systemTemp.createTempSync('sj_recent').path;
-    const fonts = r'C:\Windows\Fonts';
-    await _font('Arial', ['$fonts\\arial.ttf']);
-    await _font('Segoe UI', ['$fonts\\segoeui.ttf', '$fonts\\segoeuib.ttf']);
-    await _font('Consolas', ['$fonts\\consola.ttf', '$fonts\\consolab.ttf']);
-    final flutterRoot = Platform.environment['FLUTTER_ROOT'] ?? r'C:\src\flutter';
-    await _font('MaterialIcons',
-        ['$flutterRoot\\bin\\cache\\artifacts\\material_fonts\\MaterialIcons-Regular.otf']);
+    const win = r'C:\Windows\Fonts';
+    const lib = '/usr/share/fonts/truetype/liberation';
+    const dejavu = '/usr/share/fonts/truetype/dejavu';
+    await _font('Arial', [
+      ['$win\\arial.ttf'],
+      ['$lib/LiberationSans-Regular.ttf'],
+    ]);
+    await _font('Segoe UI', [
+      ['$win\\segoeui.ttf', '$win\\segoeuib.ttf'],
+      ['$dejavu/DejaVuSans.ttf', '$dejavu/DejaVuSans-Bold.ttf'],
+    ]);
+    await _font('Consolas', [
+      ['$win\\consola.ttf', '$win\\consolab.ttf'],
+      ['$lib/LiberationMono-Regular.ttf', '$lib/LiberationMono-Bold.ttf'],
+    ]);
+    final sep = Platform.pathSeparator;
+    await _font('MaterialIcons', [
+      ['${_flutterRoot()}${sep}bin${sep}cache${sep}artifacts${sep}material_fonts${sep}MaterialIcons-Regular.otf'],
+    ]);
   });
 
   testWidgets('интерфейс: загрузка, зум, светофор, тёмная тема', (t) async {
@@ -74,6 +102,12 @@ void main() {
 
     await t.pumpWidget(RepaintBoundary(key: _boundary, child: StationApp(initialPath: _sample)));
     await _waitFor(t, find.textContaining('светофоров'));
+    // файл – в недавних (с миниатюрой): на этом держится тест стартового экрана
+    for (var i = 0; i < 50 && Recent.load().isEmpty; i++) {
+      await t.runAsync(() => Future.delayed(const Duration(milliseconds: 100)));
+      await t.pump();
+    }
+    expect(Recent.load(), isNotEmpty);
     await _shot(t, '1_loaded');
 
     // зум колесом к узлу левой горловины
@@ -210,6 +244,13 @@ void main() {
     await _waitFor(t, find.textContaining('Отменено'));
     await _waitFor(t, find.byTooltip('Повторить: расстановка заново (Ctrl+Y)'));
     await _shot(t, '9_undo');
+    // отменили до открытого состояния – сохранять нечего
+    expect(find.text('не сохранено'), findsNothing);
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.keyY);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await _waitFor(t, find.textContaining('Повторено'));
+    expect(find.text('не сохранено'), findsOneWidget);
 
     // закрытие окна с несохранёнными правками -> вопрос; «Отмена» – окно остаётся
     final exit = t.binding.handleRequestAppExit();
@@ -265,6 +306,19 @@ void main() {
     await t.dragFrom(scr(j.pos), const Offset(-12, 0));
     await _waitFor(t, find.text('Стык перенесён'));
 
+    // 1б) Del дважды подряд, пока идёт пересчёт, – удаляется один стык, а не соседний
+    final before = scene.joints.length;
+    await t.sendKeyEvent(LogicalKeyboardKey.delete);
+    await t.sendKeyEvent(LogicalKeyboardKey.delete);
+    await _waitFor(t, find.textContaining('${before - 1} стыков'));
+    await t.runAsync(() => Future.delayed(const Duration(milliseconds: 500)));
+    await t.pump();
+    expect(find.textContaining('${before - 1} стыков'), findsOneWidget);
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await _waitFor(t, find.textContaining('$before стыков'));
+
     // 2) «Пути»: новый отрезок от конца пути
     await t.sendKeyEvent(LogicalKeyboardKey.keyT);
     await t.pump();
@@ -314,6 +368,22 @@ void main() {
     final sig = v4.scene!.signals.firstWhere((g) => g.code == 'man_dwarf');
     await t.tapAt(origin + v4.controller.toScreen(sig.box.center)!);
     await _waitFor(t, find.textContaining('Светофор ${sig.name}'));
+
+    // 5б) маршруты: вкладка, выбор маршрута – подсветка и свойства
+    await t.sendKeyEvent(LogicalKeyboardKey.f1);
+    await t.tap(find.text('Маршруты').last);
+    await t.pump();
+    expect(find.textContaining('Поездные ('), findsOneWidget);
+    await t.tap(find.textContaining('на путь IП').first);
+    await t.pump(const Duration(milliseconds: 300));
+    await _shot(t, '14b_route');
+    await t.tap(find.textContaining('Маневровые ('));
+    await t.pump();
+    expect(find.textContaining('до М'), findsWidgets);
+    await t.tap(find.text('Свойства').last);
+    await t.pump();
+    expect(find.textContaining('Маршрут '), findsOneWidget);
+    await t.sendKeyEvent(LogicalKeyboardKey.f1);
 
     // 6) «Два листа» – ручные правки стыков переносятся
     await t.sendKeyEvent(LogicalKeyboardKey.f1);
