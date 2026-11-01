@@ -1021,6 +1021,7 @@ class _HomeState extends State<Home> {
     final (ext, label, suffix, cmd) = switch (kind) {
       'png' => ('png', 'PNG', '_стыки', 'export_png'),
       'pdf' => ('pdf', 'PDF', '_листы', 'export_pdf'),
+      'vsdx' => ('vsdx', 'Схема Visio', '', 'export_vsdx'),
       _ => ('docx', 'Документ Word', '_ведомость', 'export_docx'),
     };
     final picked = pickSave('$_base$suffix.$ext', label, ext);
@@ -2147,6 +2148,7 @@ class _ExportMenu extends StatelessWidget {
         item('pdf', 'PDF – два листа, М 1:1', 'Ctrl+P'),
         item('png', 'PNG – вся схема', 'Ctrl+E'),
         item('docx', 'Ведомость для записки (Word)', ''),
+        item('vsdx', 'Схема для Visio (VSDX)', ''),
       ],
       child: Container(
         height: 28,

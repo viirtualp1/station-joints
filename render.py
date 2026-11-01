@@ -190,6 +190,7 @@ class Recorder:
         self.items: list[dict] = []
         self._probe = ImageDraw.Draw(Image.new('L', (1, 1)))
         self.tag = ''                            # слой, к которому относятся примитивы
+        self.obj = ''                            # объект схемы: 'joint:3', 'signal:7'…
 
     @staticmethod
     def _col(c):
@@ -204,18 +205,20 @@ class Recorder:
 
     def line(self, xy, fill=None, width=1):
         self.items.append({'t': 'line', 'p': self._pts(xy), 'c': self._col(fill),
-                           'w': round(width * self.k, 3), 'g': self.tag})
+                           'w': round(width * self.k, 3), 'g': self.tag, 'o': self.obj})
 
     def polygon(self, xy, fill=None, outline=None, width=1):
         self.items.append({'t': 'poly', 'p': self._pts(xy), 'f': self._col(fill),
-                           'c': self._col(outline), 'w': round(width * self.k, 3), 'g': self.tag})
+                           'c': self._col(outline), 'w': round(width * self.k, 3), 'g': self.tag,
+                           'o': self.obj})
 
     def ellipse(self, box, fill=None, outline=None, width=1):
         x0, y0, x1, y1 = box
         self.items.append({'t': 'circle', 'x': round((x0 + x1) / 2 * self.k, 3),
                            'y': round((y0 + y1) / 2 * self.k, 3),
                            'r': round((x1 - x0) / 2 * self.k, 3), 'f': self._col(fill),
-                           'c': self._col(outline), 'w': round(width * self.k, 3), 'g': self.tag})
+                           'c': self._col(outline), 'w': round(width * self.k, 3), 'g': self.tag,
+                           'o': self.obj})
 
     def rectangle(self, box, fill=None, outline=None, width=1):
         x0, y0, x1, y1 = box
@@ -227,13 +230,19 @@ class Recorder:
         self.items.append({'t': 'text', 'x': round(xy[0] * self.k, 3),
                            'y': round(xy[1] * self.k, 3), 's': text,
                            'h': round(size * self.k, 3), 'a': anchor, 'c': self._col(fill),
-                           'g': self.tag})
+                           'g': self.tag, 'o': self.obj})
 
     def textbbox(self, xy, text, font=None, anchor='la'):
         return self._probe.textbbox(xy, text, font=font, anchor=anchor)
 
 
 REC_PX = 10.0          # пикселей на мм при записи (шрифты PIL – целые, точность 0,1 мм)
+
+
+def _obj(record, name: str):
+    """Пометить, к какому объекту схемы относятся следующие примитивы (для .vsdx)."""
+    if record is not None:
+        record.obj = name
 
 
 def render(st: Station, size, *, show_joints=True, show_letters=False,
@@ -310,6 +319,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
     if st.sections and show_sections:
         cols = _palette(len(st.sections))
         for i, s in enumerate(st.sections):
+            _obj(record, f'section:{s["name"]}')
             for p in s['pieces']:
                 e = g.edges[p['edge']]
                 w = LINE_MAIN if p['edge'] in main_edges else LINE_TRACK
@@ -317,8 +327,10 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
                        fill=cols[i], width=lw(w * 1.8))
     else:
         for e in g.edges.values():
+            _obj(record, f'edge:{e.id}')
             w = LINE_MAIN if e.id in main_edges else LINE_TRACK
             d.line([S(*g.pos(e.a)), S(*g.pos(e.b))], fill='black', width=lw(w))
+    _obj(record, '')
     if highlight is not None and highlight in g.edges:
         e = g.edges[highlight]
         d.line([S(*g.pos(e.a)), S(*g.pos(e.b))], fill=(255, 150, 0), width=lw(1.5))
@@ -329,6 +341,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
     for n in g.nodes.values():
         if g.degree(n.id) != 1 or n.mark != 'tupik':
             continue
+        _obj(record, f'node:{n.id}')
         e = g.incident(n.id)[0]
         dx, dy = g.direction(e, n.id)       # направление внутрь пути
         nx, ny = -dy, dx
@@ -343,6 +356,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             d.text((cx - dx * 2.5 * mm, cy), n.label, fill='black',
                    font=_font(FONT_LETTER * 1.2 * mm), anchor='rm' if dx > 0 else 'lm')
 
+    _obj(record, '')
     if record is not None:
         record.tag = 'numbers'
     # ось станции и номера путей с указанием специализации (п. 2.2): пути обезличены –
@@ -395,6 +409,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
     # стрелки (прил. 1): со стороны остряков, на стороне ответвления –
     # закрашенный прямоугольник 3×1 мм и тонкая линия 5 мм
     for s, info in st.sw.items():
+        _obj(record, f'switch:{s}')
         n = g.nodes[s]
         tx, ty = g.direction(g.edges[info['trunk']], s)
         nx, ny = -ty, tx
@@ -442,6 +457,7 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
             py = cy + ty * along * mm + side * ny * 3.0 * mm
             d.text((px, py), n.number, fill='black', font=f_num, anchor='mm')
 
+    _obj(record, '')
     if record is not None:
         record.tag = 'joints'
     # стыки (прил. 1): 2 мм высота, полочки 2 мм; негабаритный – в окружности Ø6
@@ -451,7 +467,8 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
         for s in getattr(st, 'signals', []):
             sig_side.setdefault(id(s.joint), []).append(geometry(st, s)[2])
     if show_joints:
-        for j in st.joints:
+        for ji, j in enumerate(st.joints):
+            _obj(record, f'joint:{ji}')
             e = g.edges[j.edge]
             cx, cy = S(*g.point_on(e, j.t))
             (ax, ay), (bx, by) = g.pos(e.a), g.pos(e.b)
@@ -477,14 +494,17 @@ def render(st: Station, size, *, show_joints=True, show_letters=False,
                 d.text((cx + nx * off, cy + ny * off), j.rule,
                        fill=BLUE if j.rule != 'р' else RED, font=f_letter, anchor='mm')
 
+    _obj(record, '')
     if record is not None:
         record.tag = 'signals'
     # светофоры
     if show_signals:
         f_sig = _font(FONT_LETTER * 1.2 * mm)
         f_two = _font(1.5 * mm)
-        for s in getattr(st, 'signals', []):
+        for si, s in enumerate(getattr(st, 'signals', [])):
+            _obj(record, f'signal:{si}')
             _draw_signal(d, st, s, S, mm, lw, f_sig, f_two)
+    _obj(record, '')
 
     # линия склейки двух листов (режим «Два листа»); клиент рисует её сам
     if st.sheet_cut is not None and record is None:
