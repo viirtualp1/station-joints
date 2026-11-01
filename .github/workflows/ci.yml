@@ -1,0 +1,46 @@
+# Checks on every pull request and every push to main:
+#   * backend – recognise the sample and export PNG/PDF/DOCX/VSDX (tools/smoke_test.py);
+#   * UI      – flutter analyze + unit tests (the visual test needs fonts and is run locally).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (smoke test)
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install opencv-python-headless numpy pillow
+      - run: python tools/smoke_test.py
+
+  ui:
+    name: UI (analyze + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app_flutter
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.5
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test test/update_test.dart
